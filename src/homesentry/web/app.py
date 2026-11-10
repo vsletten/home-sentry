@@ -233,6 +233,28 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         S().retire(device_id)
         return RedirectResponse("/", status_code=303)
 
+    @app.get("/guides", response_class=HTMLResponse)
+    def guides():
+        gdir = data_dir() / "guides"
+        names = sorted(p.stem for p in gdir.glob("*.html")) if gdir.is_dir() else []
+        items = (
+            "".join(f'<li><a href="/guides/{n}">{n}</a></li>' for n in names) or "<li>none yet</li>"
+        )
+        return HTMLResponse(
+            f"<!doctype html><meta name=viewport content='width=device-width'>"
+            f"<title>Guides</title><h1>Guides</h1><ul>{items}</ul><p><a href='/'>back</a>"
+        )
+
+    @app.get("/guides/{slug}")
+    def guide(slug: str):
+        # Runbooks dropped (or symlinked) into <data>/guides/. Strict slug, no paths.
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", slug):
+            raise HTTPException(404)
+        p = data_dir() / "guides" / f"{slug}.html"
+        if not p.is_file():
+            raise HTTPException(404)
+        return FileResponse(p, media_type="text/html")
+
     @app.get("/photo/{device_id}/{name}")
     def photo(device_id: int, name: str):
         if not re.fullmatch(r"\d+\.[a-z0-9]{1,5}", name):

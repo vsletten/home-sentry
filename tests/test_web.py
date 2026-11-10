@@ -77,3 +77,16 @@ def test_photo_route_rejects_traversal(tmp_path, monkeypatch):
     monkeypatch.setenv("HOMESENTRY_HOME", str(tmp_path))
     c = TestClient(create_app(Store(tmp_path / "t.db"), FakeLLM()))
     assert c.get("/photo/1/..%2F..%2Ft.db").status_code == 404
+
+
+def test_guides_serves_only_named_html(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOMESENTRY_HOME", str(tmp_path))
+    (tmp_path / "guides").mkdir()
+    (tmp_path / "guides" / "wifi-cutover.html").write_text("<h1>cutover</h1>")
+    (tmp_path / "secret.html").write_text("nope")
+    c = TestClient(create_app(Store(tmp_path / "t.db"), FakeLLM()))
+    assert "wifi-cutover" in c.get("/guides").text
+    r = c.get("/guides/wifi-cutover")
+    assert r.status_code == 200 and "cutover" in r.text
+    for bad in ("../secret", "..%2Fsecret", "Wifi", "x.html", ""):
+        assert c.get(f"/guides/{bad}").status_code == 404
