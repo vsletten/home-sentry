@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import kb as kblib
-from .llm import LLM, encode_image
+from .llm import LLM
 from .store import Store
 
 SYSTEM = """You are the device-identification assistant inside HomeSentry, a local-first \
@@ -72,7 +72,11 @@ def run_turn(
     if device is None:
         raise KeyError(device_id)
     images = images or []
-    store.add_turn(device_id, "user", text or "(photo)", [str(p) for p in images])
+    said = text
+    if images:  # vision model reads, reasoning model thinks; transcript persists in history
+        transcript = llm.read_images(images, hint=text)
+        said = (f"{text}\n\n" if text else "") + f"[Photo transcript]\n{transcript}"
+    store.add_turn(device_id, "user", said or "(empty)", [str(p) for p in images])
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM},
@@ -81,15 +85,8 @@ def run_turn(
             "content": "Network evidence:\n" + evidence_brief(device, store.evidence(device_id)),
         },
     ]
-    for t in store.turns(device_id)[:-1][-12:]:  # prior conversation, text only
+    for t in store.turns(device_id)[-13:]:  # conversation incl. this turn, text only
         messages.append({"role": t["role"], "content": t["content"]})
-    current: dict[str, Any] = {
-        "role": "user",
-        "content": text or "Here's a photo of the device. What is it?",
-    }
-    if images:
-        current["images"] = [encode_image(p) for p in images]
-    messages.append(current)
 
     reply = llm.chat_json(messages)
     store.add_turn(device_id, "assistant", json.dumps(reply))

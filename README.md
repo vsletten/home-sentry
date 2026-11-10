@@ -13,7 +13,7 @@ the MAC *vendor* only, never MACs, IPs or serials. UPnP serial numbers are never
 discover (ARP sweep · mDNS · SSDP/UPnP · nmap -sV, all unprivileged)
    → evidence (SQLite)
    → identify (deterministic rules + learned KB)        ← no LLM, free, instant
-   → wizard  (Ollama: evidence + your words + photos)   ← for what rules can't pin
+   → wizard  (photo → vision reader → transcript; glm-5.3 reasons)  ← what rules can't pin
    → confirm (locks identity, teaches the KB)
 ```
 
@@ -29,9 +29,13 @@ uv sync -p 3.13
 OLLAMA_API_KEY=... .venv/bin/homesentry serve --host <tailnet-ip> --port 8720
 ```
 
-Env: `OLLAMA_API_KEY`, `HOMESENTRY_MODEL` (default `kimi-k3`, must support vision),
-`HOMESENTRY_LLM_BASE` (default `https://ollama.com`; a local Ollama works),
-`HOMESENTRY_HOME` (data dir).
+Env: `OLLAMA_API_KEY`; `HOMESENTRY_MODEL` (reasoning, default `glm-5.3`, needs no vision);
+`HOMESENTRY_VISION_MODEL` (photo reader, default `glm-5.3-flash`, must list `vision` in
+`/api/show` capabilities); `HOMESENTRY_THINK` (default `low`); `HOMESENTRY_LLM_BASE`
+(default `https://ollama.com`; a local Ollama works); `HOMESENTRY_HOME` (data dir).
+
+Photo turns run in two stages: the vision model transcribes the photo (serials masked), then
+the reasoning model works from the transcript. The transcript stays in the chat history.
 
 ## Tests
 

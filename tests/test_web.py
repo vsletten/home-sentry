@@ -9,7 +9,11 @@ from homesentry.web.app import create_app
 
 class FakeLLM:
     def __init__(self):
-        self.calls = []
+        self.calls, self.read = [], []
+
+    def read_images(self, images, hint=""):
+        self.read.append((images, hint))
+        return "TerraMaster F2-210 / FCC ID: [unreadable] / S/N: [serial]"
 
     def chat_json(self, messages):
         self.calls.append(messages)
@@ -49,7 +53,10 @@ def test_end_to_end_manual_device_wizard_confirm(tmp_path, monkeypatch):
         follow_redirects=True,
     )
     assert r.status_code == 200 and "TerraMaster F2-210" in r.text
-    assert llm.calls[0][-1]["images"]  # photo went to the model
+    assert len(llm.read[0][0]) == 1 and llm.read[0][1] == "the NAS in the closet"
+    brain = llm.calls[0]
+    assert not any("images" in m for m in brain)  # reasoning model never gets raw pixels
+    assert "[Photo transcript]" in brain[-1]["content"] and "F2-210" in brain[-1]["content"]
     assert "/photo/" in r.text
 
     r = c.post(

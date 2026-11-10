@@ -123,6 +123,9 @@ class FakeLLM:
         self.calls.append(messages)
         return self.reply
 
+    def read_images(self, images, hint=""):
+        return "unused"
+
 
 def test_wizard_turn_redacts_and_applies(tmp_path, monkeypatch):
     monkeypatch.setenv("HOMESENTRY_HOME", str(tmp_path))
@@ -184,3 +187,29 @@ def test_printer_from_ports():
         "Canon",
     )
     assert g["device_type"] == "printer" and g["make"] == "Canon"
+
+
+def test_ollama_client_sends_think_and_falls_back(monkeypatch):
+    import httpx
+
+    from homesentry.llm import OllamaClient
+
+    bodies = []
+
+    def fake_post(url, json, headers, timeout):
+        bodies.append(dict(json))
+        if "think" in json:
+            return httpx.Response(
+                400, json={"error": "think not supported"}, request=httpx.Request("POST", url)
+            )
+        return httpx.Response(
+            200, json={"message": {"content": '{"ok": 1}'}}, request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.delenv("HOMESENTRY_THINK", raising=False)
+    c = OllamaClient(api_key="k")
+    assert c.model == "glm-5.3" and c.vision_model == "glm-5.3-flash"
+    assert c.chat_json([{"role": "user", "content": "hi"}]) == {"ok": 1}
+    assert bodies[0]["think"] == "low" and "think" not in bodies[1]
+    assert "think" not in bodies[0] or bodies[0]["model"] == "glm-5.3"
