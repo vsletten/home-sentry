@@ -213,3 +213,26 @@ def test_ollama_client_sends_think_and_falls_back(monkeypatch):
     assert c.chat_json([{"role": "user", "content": "hi"}]) == {"ok": 1}
     assert bodies[0]["think"] == "low" and "think" not in bodies[1]
     assert "think" not in bodies[0] or bodies[0]["model"] == "glm-5.3"
+
+
+def test_kb_learns_only_model_specific_rules(tmp_path):
+    hr34 = ev(
+        ("ssdp", "modelName", "HR34"),
+        ("ssdp", "modelDescription", "DIRECTV Plus HD DVR"),
+        ("nmap", "http_title", "Did not follow redirect to http://10.9.9.20:8181"),
+    )
+    path = kb.learn({"make": "DIRECTV", "model": "HR34"}, hr34, out_dir=tmp_path)
+    text = path.read_text()
+    assert "10.9.9.20" not in text and "Plus HD DVR" not in text
+    other_box = ev(
+        ("ssdp", "modelName", "MediaRenderer"), ("ssdp", "modelDescription", "DIRECTV Plus HD DVR")
+    )
+    assert kb.match(kb.load([tmp_path]), kb.facts_from_evidence(other_box)) is None
+
+
+def test_stale_rule_types_in_old_kb_files_are_inert(tmp_path):
+    (tmp_path / "x.yaml").write_text(
+        "make: X\nmodel: Y\nmatch:\n  ssdp_description: [Shared Family Text]\n"
+    )
+    facts = {"ssdp_description": {"Shared Family Text"}}
+    assert kb.match(kb.load([tmp_path]), facts) is None

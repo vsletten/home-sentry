@@ -129,7 +129,20 @@ def guess(
     for title in by.get(("nmap", "http_title"), []):
         offer("make", _vendor_in(title), 0.4, "HTTP title")
 
-    # 6. Network role and OUI: weak but always available
+    # 6. Tailscale peer: the node's own name and OS
+    ts_os = (first("tailscale", "os") or "").lower()
+    if ts_os == "macos":
+        offer("make", "Apple", 0.65, "Tailscale macOS node")
+        offer("device_type", "computer", 0.65, "Tailscale macOS node")
+    elif ts_os == "ios":
+        offer("make", "Apple", 0.65, "Tailscale iOS node")
+        offer("device_type", "phone", 0.5, "Tailscale iOS node")
+    elif ts_os == "android":
+        offer("device_type", "phone", 0.5, "Tailscale Android node")
+    elif ts_os in ("windows", "linux"):
+        offer("device_type", "computer", 0.5, f"Tailscale {ts_os} node")
+
+    # 7. Network role and OUI: weak but always available
     if is_gateway:
         offer("device_type", "router", 0.6, "default gateway")
     if is_self:

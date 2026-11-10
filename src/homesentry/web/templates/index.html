@@ -3,25 +3,32 @@
 {% if scan.running %}<meta http-equiv="refresh" content="3">{% endif %}
 <style>
 .top{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px}
-.stats{display:flex;gap:10px}.stat{padding:10px 14px}.stat b{font-size:22px;display:block}
+.stats{display:flex;gap:10px;flex-wrap:wrap}.stat{padding:10px 14px}.stat b{font-size:22px;display:block}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
-.dev{display:flex;flex-direction:column;gap:8px;transition:transform .1s}
+.dev{display:flex;flex-direction:column;gap:8px;transition:transform .1s;border-left-width:4px}
 .dev:hover{transform:translateY(-2px);border-color:var(--acc)}
 .dev .hd{display:flex;gap:10px;align-items:center}.dev .ic{font-size:30px}
 .dev .name{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .log{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0 0 14px}
+.sev-critical{border-left-color:#7b1fa2}.sev-high{border-left-color:var(--bad)}
+.sev-medium{border-left-color:var(--warn)}.sev-low{border-left-color:#8aa4d6}
+.risks{margin:0 0 18px}.risks a{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line)}
+.risks a:first-of-type{border-top:0}
+h2.net{font-size:14px;margin:22px 0 10px;color:var(--mute);font-weight:600;letter-spacing:.3px}
 </style>
 <div class="top">
   <div class="stats">
     <div class="card stat"><b>{{ stats.total }}</b><span class="mute small">devices</span></div>
     <div class="card stat"><b style="color:var(--ok)">{{ stats.confirmed }}</b><span class="mute small">confirmed</span></div>
     <div class="card stat"><b style="color:var(--warn)">{{ stats.unknown }}</b><span class="mute small">need ID</span></div>
+    <div class="card stat"><b style="color:var(--bad)">{{ stats.risks }}</b><span class="mute small">high risks</span></div>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <form method="post" action="/scan" style="display:flex;gap:8px;align-items:center">
       <label class="small mute"><input type="checkbox" name="ports" value="true"> + port scan</label>
-      <button class="btn primary" {% if scan.running %}disabled{% endif %}>{{ "Scanning…" if scan.running else "Scan network" }}</button>
+      <button class="btn primary" {% if scan.running %}disabled{% endif %}>{{ "Working…" if scan.running else "Scan network" }}</button>
     </form>
+    <form method="post" action="/threats"><button class="btn" {% if scan.running %}disabled{% endif %}>Threat check</button></form>
     <form method="post" action="/devices/new" style="display:flex;gap:6px">
       <input type="text" name="label" placeholder="Add a device by hand…" style="width:190px">
       <button class="btn">Add</button>
@@ -30,25 +37,43 @@
 </div>
 {% if scan.running or scan.error %}<pre class="card log">{{ scan.log|join("\n") }}{% if scan.error %}
 ERROR: {{ scan.error }}{% endif %}</pre>{% endif %}
+
+{% if top %}
+<div class="card risks">
+  <div style="font-weight:650;margin-bottom:4px">⚠️ Top risks</div>
+  {% for f in top %}
+  <a href="/device/{{ f.device_id }}"><span class="chip {{ f.severity }}">{{ f.severity }}</span>
+    <span><b>{{ f.device }}</b> · {{ f.title }}</span></a>
+  {% endfor %}
+</div>
+{% endif %}
+
 <p class="mute small">Last scan: {% if last_scan %}{{ ago(last_scan.finished) }} · {{ last_scan.summary.hosts }} hosts on {{ last_scan.summary.cidr }} in {{ last_scan.summary.seconds }}s{% else %}never: hit <b>Scan network</b>{% endif %}</p>
+
+{% for net, devices in networks.items() %}
+<h2 class="net">🌐 {{ net }} · {{ devices|length }} devices</h2>
 <div class="grid">
 {% for d in devices %}
   {% set c = d.confidence or 0 %}
-  <a class="card dev" href="/device/{{ d.id }}">
+  <a class="card dev {% if d.worst %}sev-{{ d.worst }}{% endif %}" href="/device/{{ d.id }}">
     <div class="hd"><span class="ic">{{ icon(d.device_type) }}</span>
       <div style="min-width:0">
         <div class="name">{{ d.label or d.model or d.make or d.ip or "Unknown device" }}</div>
         <div class="mute small">{{ d.make or "?" }} · {{ d.model or "model ?" }}</div>
       </div></div>
     <div class="meter"><i style="width:{{ (c*100)|int }}%"></i></div>
-    <div style="display:flex;justify-content:space-between;align-items:center">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
       <span class="small mute">{{ d.ip or "not on network" }}</span>
+      <span>
+      {% if d.worst and d.worst != "info" %}<span class="chip {{ d.worst }}">{{ d.n_findings }} risk{{ "s" if d.n_findings != 1 }}</span>{% endif %}
       {% if d.confirmed %}<span class="chip ok">confirmed</span>
       {% elif c >= 0.6 %}<span class="chip">likely</span>
       {% elif c >= 0.4 %}<span class="chip warn">partial</span>
       {% else %}<span class="chip bad">identify me</span>{% endif %}
+      </span>
     </div>
   </a>
 {% endfor %}
 </div>
+{% endfor %}
 {% endblock %}

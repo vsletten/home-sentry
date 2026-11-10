@@ -55,19 +55,38 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         devices = S().devices()
+        findings = S().findings()
+        by_dev: dict[int, list] = {}
+        for f in findings:
+            by_dev.setdefault(f["device_id"], []).append(f)
+        names = {d["id"]: d["label"] or d["ip"] or "device" for d in devices}
+        for d in devices:
+            fs = by_dev.get(d["id"], [])
+            d["worst"] = fs[0]["severity"] if fs else None
+            d["n_findings"] = sum(1 for f in fs if f["severity"] != "info")
+        networks: dict[str, list] = {}
+        for d in sorted(devices, key=lambda d: (SEV_RANK.get(d["worst"], 9), d["id"])):
+            networks.setdefault(d.get("network") or "added by hand", []).append(d)
+        top = [
+            dict(f, device=names.get(f["device_id"]))
+            for f in findings
+            if f["severity"] in ("critical", "high", "medium")
+        ][:8]
         stats = {
             "total": len(devices),
             "confirmed": sum(d["confirmed"] for d in devices),
             "unknown": sum(1 for d in devices if (d["confidence"] or 0) < 0.4),
+            "risks": sum(1 for f in findings if f["severity"] in ("critical", "high")),
         }
         return tpl.TemplateResponse(
             request,
             "index.html",
             {
-                "devices": devices,
+                "networks": networks,
                 "stats": stats,
                 "scan": app.state.scan,
                 "last_scan": S().last_scan(),
+                "top": top,
             },
         )
 
@@ -83,6 +102,25 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
                 except Exception as e:  # noqa: BLE001
                     st["error"] = f"{e}"
                     traceback.print_exc()
+                finally:
+                    st["running"] = False
+
+            threading.Thread(target=work, daemon=True).start()
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/threats")
+    def threats():
+        st = app.state.scan
+        if not st["running"]:
+            st.update(running=True, log=[], error=None)
+
+            def work():
+                from .. import threat
+
+                try:
+                    threat.run(S(), log=st["log"].append)
+                except Exception as e:  # noqa: BLE001
+                    st["error"] = f"{e}"
                 finally:
                     st["running"] = False
 
@@ -114,6 +152,7 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
                 "d": d,
                 "evidence": S().evidence(device_id),
                 "turns": turns,
+                "findings": S().findings(device_id),
                 "proposal": wizard.latest_proposal(S(), device_id),
                 "error": error,
             },
@@ -179,6 +218,9 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         return FileResponse(p)
 
     return app
+
+
+SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
 def _ago(ts: float | None) -> str:

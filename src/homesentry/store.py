@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS wizard_turns(
   device_id INTEGER NOT NULL REFERENCES devices(id),
   ts REAL NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, images TEXT
 );
+CREATE TABLE IF NOT EXISTS findings(
+  id INTEGER PRIMARY KEY,
+  device_id INTEGER NOT NULL REFERENCES devices(id),
+  ts REAL NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL,
+  title TEXT NOT NULL, detail TEXT, data TEXT
+);
 CREATE TABLE IF NOT EXISTS scans(
   id INTEGER PRIMARY KEY, started REAL, finished REAL, summary TEXT
 );
@@ -43,23 +49,35 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(devices)")}
+        if "network" not in cols:  # v1 migration: which LAN a device lives on
+            self.db.execute("ALTER TABLE devices ADD COLUMN network TEXT")
+            self.db.commit()
 
     # ---- devices -------------------------------------------------------
-    def upsert_seen(self, mac: str, ip: str, hostname: str | None, oui_vendor: str | None) -> int:
+    def upsert_seen(
+        self,
+        mac: str,
+        ip: str,
+        hostname: str | None,
+        oui_vendor: str | None,
+        network: str | None = None,
+    ) -> int:
         now = time.time()
         row = self.db.execute("SELECT id FROM devices WHERE mac=?", (mac,)).fetchone()
         if row:
             self.db.execute(
                 "UPDATE devices SET ip=?, hostname=COALESCE(?, hostname),"
-                " oui_vendor=COALESCE(?, oui_vendor), last_seen=? WHERE id=?",
-                (ip, hostname, oui_vendor, now, row["id"]),
+                " oui_vendor=COALESCE(?, oui_vendor), network=COALESCE(?, network),"
+                " last_seen=? WHERE id=?",
+                (ip, hostname, oui_vendor, network, now, row["id"]),
             )
             self.db.commit()
             return row["id"]
         cur = self.db.execute(
-            "INSERT INTO devices(mac, ip, hostname, oui_vendor, first_seen, last_seen)"
-            " VALUES(?,?,?,?,?,?)",
-            (mac, ip, hostname, oui_vendor, now, now),
+            "INSERT INTO devices(mac, ip, hostname, oui_vendor, network, first_seen, last_seen)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (mac, ip, hostname, oui_vendor, network, now, now),
         )
         self.db.commit()
         return int(cur.lastrowid or 0)
@@ -153,6 +171,39 @@ class Store:
             t["images"] = json.loads(t["images"] or "[]")
             out.append(t)
         return out
+
+    # ---- findings ------------------------------------------------------
+    def replace_findings(self, device_id: int, findings: list[dict[str, Any]]) -> None:
+        now = time.time()
+        self.db.execute("DELETE FROM findings WHERE device_id=?", (device_id,))
+        self.db.executemany(
+            "INSERT INTO findings(device_id, ts, severity, kind, title, detail, data)"
+            " VALUES(?,?,?,?,?,?,?)",
+            [
+                (
+                    device_id,
+                    now,
+                    f["severity"],
+                    f["kind"],
+                    f["title"],
+                    f.get("detail"),
+                    json.dumps(f.get("data") or {}),
+                )
+                for f in findings
+            ],
+        )
+        self.db.commit()
+
+    def findings(self, device_id: int | None = None) -> list[dict[str, Any]]:
+        q = "SELECT * FROM findings" + (" WHERE device_id=?" if device_id else "")
+        rows = self.db.execute(q, (device_id,) if device_id else ()).fetchall()
+        out = []
+        for r in rows:
+            f = dict(r)
+            f["data"] = json.loads(f["data"] or "{}")
+            out.append(f)
+        order = ["critical", "high", "medium", "low", "info"]
+        return sorted(out, key=lambda f: order.index(f["severity"]))
 
     # ---- scans ---------------------------------------------------------
     def record_scan(self, started: float, summary: dict[str, Any]) -> None:

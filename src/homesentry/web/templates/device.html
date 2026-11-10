@@ -17,6 +17,7 @@ td:first-child{color:var(--mute);white-space:nowrap}
 .drop{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .cam{display:inline-flex;gap:6px;align-items:center}
 .cam input{display:none}
+.finding{border-top:1px solid var(--line);padding:6px 0}.finding summary{cursor:pointer}
 </style>
 <p><a class="mute small" href="/">← all devices</a></p>
 <div class="cols">
@@ -30,6 +31,22 @@ td:first-child{color:var(--mute);white-space:nowrap}
     <div style="margin:12px 0 4px" class="small">Confidence {{ ((d.confidence or 0)*100)|int }}% · via {{ d.id_source or "–" }}
       {% if d.confirmed %}<span class="chip ok">confirmed</span>{% endif %}</div>
     <div class="meter"><i style="width:{{ ((d.confidence or 0)*100)|int }}%"></i></div>
+
+    <h3 style="margin:18px 0 6px;font-size:14px">🛡️ Findings ({{ findings|length }})</h3>
+    {% if not findings %}<p class="small mute">Nothing flagged. Run a scan with <i>+ port scan</i> to look at services.</p>{% endif %}
+    {% for f in findings %}
+    <details class="finding" {% if f.severity in ("critical","high") %}open{% endif %}>
+      <summary><span class="chip {{ f.severity }}">{{ f.severity }}</span> {{ f.title }}
+        <span class="small mute">· {{ f.kind }}</span></summary>
+      <p class="small" style="margin:6px 0">{{ f.detail }}</p>
+      {% if f.data.cves %}
+      <table>{% for c in f.data.cves[:10] %}<tr><td><a href="https://nvd.nist.gov/vuln/detail/{{ c.id }}" target="_blank" style="color:var(--acc)">{{ c.id }}</a>{% if c.kev %} <span class="chip critical">KEV</span>{% endif %}</td>
+        <td>{{ c.cvss if c.cvss is not none else "–" }}</td><td>{{ c.summary }}</td></tr>{% endfor %}</table>
+      {% if f.data.cves|length > 10 %}<p class="small mute">+ {{ f.data.cves|length - 10 }} more</p>{% endif %}
+      {% endif %}
+      {% if f.data.port or f.data.where %}<p class="small mute" style="margin:4px 0">seen: {{ f.data.port or f.data.where }}</p>{% endif %}
+    </details>
+    {% endfor %}
 
     <h3 style="margin:18px 0 6px;font-size:14px">Lock it in</h3>
     {% set p = (proposal or {}).get("identity") or {} %}
