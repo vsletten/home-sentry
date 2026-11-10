@@ -305,6 +305,25 @@ def assess_device(
             }
         )
 
+    nat = [
+        e["value"]
+        for e in evidence
+        if (e["source"], e["key"]) in {("tailscale", "nat_for"), ("probe", "nat")}
+    ]
+    if nat and dtype != "gateway":
+        findings.append(
+            {
+                "severity": "low",
+                "kind": "config",
+                "title": "Runs its own NAT network (double NAT)",
+                "detail": "This box is routing, not bridging: devices on its Wi-Fi sit on a hidden "
+                "private network behind it. Scans can't see or assess them, they can't easily "
+                "reach devices on the main LAN (casting/AirPlay/printing), and every client "
+                "pays a second NAT. For a coverage access point, switch it to bridge/AP mode.",
+                "data": {"why": nat[0]},
+            }
+        )
+
     for e in evidence:
         if e["source"] == "outside" and e["key"] == "result":
             from .outside import findings as outside_findings

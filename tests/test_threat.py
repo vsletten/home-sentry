@@ -205,3 +205,10 @@ def test_tailscale_peer_behind_a_non_apple_nat_box_is_not_used_as_identity():
     assert discover.attribute_tailscale(peer, None, random_mac=True) == peer
     linux = [("tailscale", "name", "vps"), ("tailscale", "os", "linux")]
     assert discover.attribute_tailscale(linux, "Dell", random_mac=False) == linux
+
+
+def test_double_nat_finding_for_non_gateway_router():
+    e = ev(("probe", "nat", "peer traffic TTL 63 via this box"))
+    fs = threat.assess_device({"device_type": "router"}, e, {}, {}, [])
+    assert any(f["title"] == "Runs its own NAT network (double NAT)" for f in fs)
+    assert not threat.assess_device({"device_type": "gateway"}, e, {}, {}, [])
