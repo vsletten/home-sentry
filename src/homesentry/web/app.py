@@ -38,6 +38,7 @@ ICONS = {
     "appliance": "🧊",
     "network": "🔀",
     "apple": "🍎",
+    "game-console": "🎮",
 }
 
 

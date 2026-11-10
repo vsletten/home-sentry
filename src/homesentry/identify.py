@@ -142,7 +142,21 @@ def guess(
     elif ts_os in ("windows", "linux"):
         offer("device_type", "computer", 0.5, f"Tailscale {ts_os} node")
 
-    # 7. Network role and OUI: weak but always available
+    # 7. The gateway's own admin pages: authoritative for the gateway itself
+    offer("make", first("gateway", "vendor"), 0.95, "gateway admin page")
+    offer("model", first("gateway", "model"), 0.95, "gateway admin page")
+    if first("gateway", "model"):
+        offer("device_type", "gateway", 0.95, "gateway admin page")
+
+    # 8. DHCP hostname from the gateway's client table
+    for hn in by.get(("gateway", "dhcp_name"), []):
+        for rx, make, model, dtype in HOSTNAME_HINTS:
+            if m := re.match(rx, hn, re.I):
+                offer("make", make, 0.6, "DHCP hostname")
+                offer("model", model or (m.group(1) if m.groups() else None), 0.55, "DHCP hostname")
+                offer("device_type", dtype, 0.6, "DHCP hostname")
+
+    # 9. Network role and OUI: weak but always available
     if is_gateway:
         offer("device_type", "router", 0.6, "default gateway")
     if is_self:
@@ -155,6 +169,16 @@ def guess(
     g["reasons"] = reasons
     return g
 
+
+# hostname regex -> make, model (None = first capture group), type
+HOSTNAME_HINTS = [
+    (r"DIRECTV-([A-Z0-9]+)-", "DIRECTV", None, "set-top-box"),
+    (r"Xbox ?(One|Series ?[XS])?", "Microsoft", None, "game-console"),
+    (r"HP-([A-Z0-9-]+?)-(?:Workstation|PC|Desktop|Laptop)", "HP", None, "computer"),
+    (r"(iPhone|iPad)", "Apple", None, "phone"),
+    (r"Roku", "Roku", None, "streaming"),
+    (r"Canon", "Canon", None, "printer"),
+]
 
 KNOWN_VENDORS = [
     "Netgear",

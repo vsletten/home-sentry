@@ -24,6 +24,15 @@ downloaded whole, and all version matching happens locally. Cached in
 *leads*: distro builds are downgraded to info, and computers are capped at medium
 because their fix is an OS update.
 
+**Gateway reader (optional):** put `GATEWAY_USER`/`GATEWAY_PASS` in
+`~/.config/homesentry/gateway.env` (mode 600) and every scan logs into a Comcast/Xfinity
+RDK-B gateway (`*.jst` UI) over HTTPS, reads a fixed allowlist of status pages, and logs out.
+It adds the gateway's exact model/firmware, DHCP hostnames, devices the gateway remembers but
+that are offline now, and config findings (port forwards, DMZ, UPnP, remote management,
+firewall levels, Wi-Fi security). It never follows links: on this firmware even deleting a
+port-forward rule is a plain GET. Serial, WPS PIN, WAN IP and Wi-Fi keys are never collected,
+and gateway config never reaches the LLM. `homesentry gateway` prints a summary.
+
 **Multiple networks:** every physical interface with an RFC 1918 address is scanned
 (USB-Ethernet into a mesh router, a Wi-Fi card, ...). Tailscale peers with a direct LAN
 path add device names and OS.

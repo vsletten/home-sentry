@@ -305,6 +305,12 @@ def assess_device(
             }
         )
 
+    for e in evidence:
+        if e["source"] == "gateway_cfg" and e["key"] == "config":
+            from .gateway import config_findings
+
+            findings += config_findings(json.loads(e["value"]))
+
     findings.sort(key=lambda f: SEVERITY_ORDER.index(f["severity"]))
     return findings
 

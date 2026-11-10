@@ -66,6 +66,7 @@ ERROR: {{ scan.error }}{% endif %}</pre>{% endif %}
       <span class="small mute">{{ d.ip or "not on network" }}</span>
       <span>
       {% if d.worst and d.worst != "info" %}<span class="chip {{ d.worst }}">{{ d.n_findings }} risk{{ "s" if d.n_findings != 1 }}</span>{% endif %}
+      {% if not d.last_seen and d.mac %}<span class="chip">offline</span>{% endif %}
       {% if d.confirmed %}<span class="chip ok">confirmed</span>
       {% elif c >= 0.6 %}<span class="chip">likely</span>
       {% elif c >= 0.4 %}<span class="chip warn">partial</span>

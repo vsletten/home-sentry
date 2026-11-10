@@ -82,6 +82,27 @@ class Store:
         self.db.commit()
         return int(cur.lastrowid or 0)
 
+    def upsert_known(
+        self,
+        mac: str,
+        ip: str | None,
+        hostname: str | None,
+        oui_vendor: str | None,
+        network: str | None,
+    ) -> int:
+        """A device another source (e.g. the gateway's DHCP table) remembers but we did not
+        see on the wire. Never bumps last_seen; inserts with last_seen NULL (= offline)."""
+        row = self.db.execute("SELECT id FROM devices WHERE mac=?", (mac,)).fetchone()
+        if row:
+            return row["id"]
+        cur = self.db.execute(
+            "INSERT INTO devices(mac, ip, hostname, oui_vendor, network, first_seen)"
+            " VALUES(?,?,?,?,?,?)",
+            (mac, ip, hostname, oui_vendor, network, time.time()),
+        )
+        self.db.commit()
+        return int(cur.lastrowid or 0)
+
     def create_manual(self, label: str) -> int:
         now = time.time()
         cur = self.db.execute(

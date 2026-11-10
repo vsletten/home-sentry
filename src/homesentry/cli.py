@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--ports", action="store_true", help="also run an nmap service scan (slower)")
     sub.add_parser("list", help="print the inventory")
     sub.add_parser("threats", help="re-run the threat pass on the current inventory")
+    sub.add_parser("gateway", help="read the gateway admin pages (read-only) and summarize")
     v = sub.add_parser("serve", help="run the web UI")
     v.add_argument("--host", default="127.0.0.1")
     v.add_argument("--port", type=int, default=8720)
@@ -26,6 +27,21 @@ def main(argv: list[str] | None = None) -> None:
 
         run_scan(store, ports=a.ports)
         a.cmd = "list"
+    if a.cmd == "gateway":
+        import json
+
+        from . import discover, gateway
+
+        creds = gateway.load_credentials()
+        if not creds:
+            raise SystemExit(f"no credentials: create {gateway.ENV_PATH} (mode 600)")
+        cfg = gateway.RdkbReader(discover.lan_context()["gateway"]).read(*creds)
+        clients = cfg.pop("clients")
+        print(json.dumps(cfg, indent=1))
+        print(f"{len(clients)} DHCP clients ({sum(c['online'] for c in clients)} online)")
+        for f in gateway.config_findings(cfg):
+            print(f"  [{f['severity']:>8}] {f['title']}")
+        return
     if a.cmd == "threats":
         from . import threat
 
