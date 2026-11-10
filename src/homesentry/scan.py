@@ -137,7 +137,9 @@ def _gateway_pass(store, ctx, entries, log) -> dict[str, Any] | None:
             if did is None:
                 continue
         else:
-            known = any(d["mac"] == c["mac"] for d in store.devices())
+            if store.is_retired(c["mac"]):
+                continue
+            known = any(d["mac"] == c["mac"] for d in store.devices(include_retired=True))
             did = store.upsert_known(
                 c["mac"], c["ip"], c["hostname"], discover.oui_vendor(c["mac"]), ctx["cidr"]
             )

@@ -128,6 +128,25 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
             threading.Thread(target=work, daemon=True).start()
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/outside")
+    def outside_check():
+        st = app.state.scan
+        if not st["running"]:
+            st.update(running=True, log=[], error=None)
+
+            def work():
+                from .. import outside
+
+                try:
+                    outside.run_and_record(S(), log=st["log"].append)
+                except Exception as e:  # noqa: BLE001
+                    st["error"] = f"{e}"
+                finally:
+                    st["running"] = False
+
+            threading.Thread(target=work, daemon=True).start()
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/devices/new")
     def new_device(label: Annotated[str, Form()]):
         did = S().create_manual(label.strip() or "Unnamed device")
@@ -208,6 +227,11 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
             },
         )
         return RedirectResponse(f"/device/{device_id}", status_code=303)
+
+    @app.post("/device/{device_id}/retire")
+    def retire(device_id: int):
+        S().retire(device_id)
+        return RedirectResponse("/", status_code=303)
 
     @app.get("/photo/{device_id}/{name}")
     def photo(device_id: int, name: str):

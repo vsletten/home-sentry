@@ -33,6 +33,16 @@ firewall levels, Wi-Fi security). It never follows links: on this firmware even 
 port-forward rule is a plain GET. Serial, WPS PIN, WAN IP and Wi-Fi keys are never collected,
 and gateway config never reaches the LLM. `homesentry gateway` prints a summary.
 
+**Outside-in check (optional):** `~/.config/homesentry/probe.env` with `PROBE_SSH=<ssh alias>`
+(and `PROBE_SSH_AGENT=` if the key lives in a desktop agent). `homesentry outside` (or the
+🌍 button) pipes a stdlib TCP connect-scan of ~1000 ports to `python3 -` on that host over
+SSH: nothing installed there, it targets whatever address the probe host sees us coming from,
+and it never prints that address back. No third-party port-check service involved.
+
+**Retiring devices:** decommissioned devices can be retired from the device page. They stay
+hidden even though the gateway remembers them, and come back automatically (flagged) if they
+ever talk on the LAN again.
+
 **Multiple networks:** every physical interface with an RFC 1918 address is scanned
 (USB-Ethernet into a mesh router, a Wi-Fi card, ...). Tailscale peers with a direct LAN
 path add device names and OS.

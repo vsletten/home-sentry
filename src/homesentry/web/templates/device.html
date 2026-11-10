@@ -60,6 +60,11 @@ td:first-child{color:var(--mute);white-space:nowrap}
       <button class="btn primary" style="grid-column:1/-1">✓ Confirm identity (teaches the KB)</button>
     </form>
 
+    <form method="post" action="/device/{{ d.id }}/retire" style="margin-top:10px"
+          onsubmit="return confirm('Retire this device? It disappears from the inventory and the gateway won\'t bring it back. If it ever shows up on the network again it is restored automatically.')">
+      <button class="btn small" style="color:var(--mute)">🗄️ Retire (decommissioned)</button>
+    </form>
+
     <details style="margin-top:16px" {% if not turns %}open{% endif %}>
       <summary class="small mute">Network evidence ({{ evidence|length }})</summary>
       <table>{% for e in evidence %}<tr><td>{{ e.source }}.{{ e.key }}</td><td>{{ e.value }}</td></tr>{% endfor %}</table>

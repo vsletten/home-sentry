@@ -29,6 +29,7 @@ h2.net{font-size:14px;margin:22px 0 10px;color:var(--mute);font-weight:600;lette
       <button class="btn primary" {% if scan.running %}disabled{% endif %}>{{ "Working…" if scan.running else "Scan network" }}</button>
     </form>
     <form method="post" action="/threats"><button class="btn" {% if scan.running %}disabled{% endif %}>Threat check</button></form>
+    <form method="post" action="/outside"><button class="btn" title="TCP exposure check from your VPS" {% if scan.running %}disabled{% endif %}>🌍 Outside-in</button></form>
     <form method="post" action="/devices/new" style="display:flex;gap:6px">
       <input type="text" name="label" placeholder="Add a device by hand…" style="width:190px">
       <button class="btn">Add</button>

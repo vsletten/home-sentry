@@ -16,6 +16,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("list", help="print the inventory")
     sub.add_parser("threats", help="re-run the threat pass on the current inventory")
     sub.add_parser("gateway", help="read the gateway admin pages (read-only) and summarize")
+    sub.add_parser("outside", help="outside-in TCP exposure check from your probe host")
     v = sub.add_parser("serve", help="run the web UI")
     v.add_argument("--host", default="127.0.0.1")
     v.add_argument("--port", type=int, default=8720)
@@ -27,6 +28,11 @@ def main(argv: list[str] | None = None) -> None:
 
         run_scan(store, ports=a.ports)
         a.cmd = "list"
+    if a.cmd == "outside":
+        from . import outside
+
+        outside.run_and_record(store)
+        return
     if a.cmd == "gateway":
         import json
 

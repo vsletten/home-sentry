@@ -53,6 +53,9 @@ class Store:
         if "network" not in cols:  # v1 migration: which LAN a device lives on
             self.db.execute("ALTER TABLE devices ADD COLUMN network TEXT")
             self.db.commit()
+        if "retired" not in cols:  # decommissioned: hidden, never resurrected by gateway
+            self.db.execute("ALTER TABLE devices ADD COLUMN retired REAL")
+            self.db.commit()
 
     # ---- devices -------------------------------------------------------
     def upsert_seen(
@@ -64,8 +67,11 @@ class Store:
         network: str | None = None,
     ) -> int:
         now = time.time()
-        row = self.db.execute("SELECT id FROM devices WHERE mac=?", (mac,)).fetchone()
+        row = self.db.execute("SELECT id, retired FROM devices WHERE mac=?", (mac,)).fetchone()
         if row:
+            if row["retired"]:  # a "decommissioned" device is talking on the LAN again
+                self.db.execute("UPDATE devices SET retired=NULL WHERE id=?", (row["id"],))
+                self.add_evidence(row["id"], "user", "reappeared_after_retire", time.strftime("%F"))
             self.db.execute(
                 "UPDATE devices SET ip=?, hostname=COALESCE(?, hostname),"
                 " oui_vendor=COALESCE(?, oui_vendor), network=COALESCE(?, network),"
@@ -103,6 +109,15 @@ class Store:
         self.db.commit()
         return int(cur.lastrowid or 0)
 
+    def retire(self, device_id: int) -> None:
+        self.db.execute("UPDATE devices SET retired=? WHERE id=?", (time.time(), device_id))
+        self.db.execute("DELETE FROM findings WHERE device_id=?", (device_id,))
+        self.db.commit()
+
+    def is_retired(self, mac: str) -> bool:
+        r = self.db.execute("SELECT retired FROM devices WHERE mac=?", (mac,)).fetchone()
+        return bool(r and r["retired"])
+
     def create_manual(self, label: str) -> int:
         now = time.time()
         cur = self.db.execute(
@@ -112,9 +127,10 @@ class Store:
         self.db.commit()
         return int(cur.lastrowid or 0)
 
-    def devices(self) -> list[dict[str, Any]]:
+    def devices(self, include_retired: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_retired else " WHERE retired IS NULL"
         rows = self.db.execute(
-            "SELECT * FROM devices ORDER BY confirmed, confidence, id"
+            f"SELECT * FROM devices{where} ORDER BY confirmed, confidence, id"
         ).fetchall()
         return [dict(r) for r in rows]
 

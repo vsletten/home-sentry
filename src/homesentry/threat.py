@@ -306,6 +306,10 @@ def assess_device(
         )
 
     for e in evidence:
+        if e["source"] == "outside" and e["key"] == "result":
+            from .outside import findings as outside_findings
+
+            findings += outside_findings(json.loads(e["value"]))
         if e["source"] == "gateway_cfg" and e["key"] == "config":
             from .gateway import config_findings
 
