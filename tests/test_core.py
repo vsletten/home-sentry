@@ -34,18 +34,18 @@ def test_parse_oui_and_random_mac():
     table = discover.parse_oui("# c\n603D26 Technicolor CH USA\nBAD\n")
     assert table == {"603D26": "Technicolor CH USA"}
     assert discover.is_random_mac("da:00:11:22:33:44")
-    assert not discover.is_random_mac("60:3d:26:69:cc:10")
+    assert not discover.is_random_mac("60:3d:26:00:00:01")
 
 
 def test_parse_neigh_filters_failed_and_v6():
     js = json.dumps(
         [
-            {"dst": "10.1.10.1", "lladdr": "60:3D:26:69:CC:10", "state": ["REACHABLE"]},
+            {"dst": "10.1.10.1", "lladdr": "60:3d:26:00:00:01", "state": ["REACHABLE"]},
             {"dst": "10.1.10.9", "state": ["FAILED"]},
             {"dst": "fe80::1", "lladdr": "aa:bb:cc:dd:ee:ff", "state": ["STALE"]},
         ]
     )
-    assert discover.parse_neigh(js) == {"10.1.10.1": "60:3d:26:69:cc:10"}
+    assert discover.parse_neigh(js) == {"10.1.10.1": "60:3d:26:00:00:01"}
 
 
 def test_parse_upnp_never_keeps_serial():
@@ -127,7 +127,7 @@ class FakeLLM:
 def test_wizard_turn_redacts_and_applies(tmp_path, monkeypatch):
     monkeypatch.setenv("HOMESENTRY_HOME", str(tmp_path))
     st = Store(tmp_path / "t.db")
-    did = st.upsert_seen("60:3d:26:69:cc:10", "10.1.10.1", None, "Technicolor CH USA")
+    did = st.upsert_seen("60:3d:26:00:00:01", "10.1.10.1", None, "Technicolor CH USA")
     st.add_evidence(did, "ssdp", "modelName", "CGA4131COM")
     llm = FakeLLM(
         {
