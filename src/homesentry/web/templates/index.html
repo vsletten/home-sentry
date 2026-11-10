@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block body %}
+{% if scan.running %}<meta http-equiv="refresh" content="3">{% endif %}
+<style>
+.top{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px}
+.stats{display:flex;gap:10px}.stat{padding:10px 14px}.stat b{font-size:22px;display:block}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.dev{display:flex;flex-direction:column;gap:8px;transition:transform .1s}
+.dev:hover{transform:translateY(-2px);border-color:var(--acc)}
+.dev .hd{display:flex;gap:10px;align-items:center}.dev .ic{font-size:30px}
+.dev .name{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0 0 14px}
+</style>
+<div class="top">
+  <div class="stats">
+    <div class="card stat"><b>{{ stats.total }}</b><span class="mute small">devices</span></div>
+    <div class="card stat"><b style="color:var(--ok)">{{ stats.confirmed }}</b><span class="mute small">confirmed</span></div>
+    <div class="card stat"><b style="color:var(--warn)">{{ stats.unknown }}</b><span class="mute small">need ID</span></div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <form method="post" action="/scan" style="display:flex;gap:8px;align-items:center">
+      <label class="small mute"><input type="checkbox" name="ports" value="true"> + port scan</label>
+      <button class="btn primary" {% if scan.running %}disabled{% endif %}>{{ "Scanning…" if scan.running else "Scan network" }}</button>
+    </form>
+    <form method="post" action="/devices/new" style="display:flex;gap:6px">
+      <input type="text" name="label" placeholder="Add a device by hand…" style="width:190px">
+      <button class="btn">Add</button>
+    </form>
+  </div>
+</div>
+{% if scan.running or scan.error %}<pre class="card log">{{ scan.log|join("\n") }}{% if scan.error %}
+ERROR: {{ scan.error }}{% endif %}</pre>{% endif %}
+<p class="mute small">Last scan: {% if last_scan %}{{ ago(last_scan.finished) }} · {{ last_scan.summary.hosts }} hosts on {{ last_scan.summary.cidr }} in {{ last_scan.summary.seconds }}s{% else %}never: hit <b>Scan network</b>{% endif %}</p>
+<div class="grid">
+{% for d in devices %}
+  {% set c = d.confidence or 0 %}
+  <a class="card dev" href="/device/{{ d.id }}">
+    <div class="hd"><span class="ic">{{ icon(d.device_type) }}</span>
+      <div style="min-width:0">
+        <div class="name">{{ d.label or d.model or d.make or d.ip or "Unknown device" }}</div>
+        <div class="mute small">{{ d.make or "?" }} · {{ d.model or "model ?" }}</div>
+      </div></div>
+    <div class="meter"><i style="width:{{ (c*100)|int }}%"></i></div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="small mute">{{ d.ip or "not on network" }}</span>
+      {% if d.confirmed %}<span class="chip ok">confirmed</span>
+      {% elif c >= 0.6 %}<span class="chip">likely</span>
+      {% elif c >= 0.4 %}<span class="chip warn">partial</span>
+      {% else %}<span class="chip bad">identify me</span>{% endif %}
+    </div>
+  </a>
+{% endfor %}
+</div>
+{% endblock %}
