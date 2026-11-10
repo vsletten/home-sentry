@@ -109,6 +109,26 @@ def parse_tailscale(js: str) -> dict[str, list[Sighting]]:
     return res
 
 
+APPLE_OS = {"macos", "ios", "tvos"}
+
+
+def attribute_tailscale(
+    sightings: list[Sighting], oui_vendor: str | None, random_mac: bool
+) -> list[Sighting]:
+    """A Tailscale peer's LAN endpoint only proves its packets LEAVE from that IP. If the
+    device holding the IP can't be that peer (an Apple OS behind a non-Apple NIC vendor),
+    the device is a NAT box in front of it: record that instead of naming it after the peer.
+    (Learned on a real LAN: a MacBook behind a Linux access point doing NAT.)"""
+    name = next((v for _, k, v in sightings if k == "name"), None)
+    os_ = next((v for _, k, v in sightings if k == "os"), "").lower()
+    if not name:
+        return []
+    fits = os_ not in APPLE_OS or random_mac or "apple" in (oui_vendor or "").lower()
+    if fits:
+        return sightings
+    return [("tailscale", "nat_for", f"{name} ({os_})")]
+
+
 # ---- OUI ---------------------------------------------------------------------
 _oui: dict[str, str] | None = None
 

@@ -61,7 +61,8 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
         did = store.upsert_seen(mac, ip, names.get(ip), vendor, network=ctx["cidr"])
         if discover.is_random_mac(mac):
             store.add_evidence(did, "arp", "mac_randomized", "yes")
-        sightings = mdns.get(ip, []) + ssdp.get(ip, []) + svc.get(ip, []) + peers.get(ip, [])
+        ts = discover.attribute_tailscale(peers.get(ip, []), vendor, discover.is_random_mac(mac))
+        sightings = mdns.get(ip, []) + ssdp.get(ip, []) + svc.get(ip, []) + ts
         for src, key, val in sightings:
             if val:
                 store.add_evidence(did, src, key, val)

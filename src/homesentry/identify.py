@@ -142,6 +142,10 @@ def guess(
     elif ts_os in ("windows", "linux"):
         offer("device_type", "computer", 0.5, f"Tailscale {ts_os} node")
 
+    nat_for = by.get(("tailscale", "nat_for"), [])
+    if nat_for:
+        offer("device_type", "router", 0.6, f"NATs Tailscale node {nat_for[0]}")
+
     # 7. The gateway's own admin pages: authoritative for the gateway itself
     offer("make", first("gateway", "vendor"), 0.95, "gateway admin page")
     offer("model", first("gateway", "model"), 0.95, "gateway admin page")

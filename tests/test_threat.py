@@ -190,3 +190,18 @@ def test_kev_on_own_computer_caps_at_medium_with_kev_note():
     nas = threat.assess_device({"device_type": "nas"}, evidence, kev, nvd, [])
     assert pc[0]["severity"] == "medium" and "OS updates" in pc[0]["detail"]
     assert nas[0]["severity"] == "critical" and "2026-11-09" in nas[0]["detail"]
+
+
+def test_tailscale_peer_behind_a_non_apple_nat_box_is_not_used_as_identity():
+    from homesentry import identify
+
+    peer = [("tailscale", "name", "Victor's MacBook Pro"), ("tailscale", "os", "macOS")]
+    behind = discover.attribute_tailscale(peer, "Mojo Networks", random_mac=False)
+    assert behind == [("tailscale", "nat_for", "Victor's MacBook Pro (macos)")]
+    g = identify.guess(ev(*behind), "Mojo Networks")
+    assert g["device_type"] == "router" and g["make"] != "Apple"
+    # an Apple NIC (or a randomized MAC) can really be the Mac itself
+    assert discover.attribute_tailscale(peer, "Apple, Inc.", random_mac=False) == peer
+    assert discover.attribute_tailscale(peer, None, random_mac=True) == peer
+    linux = [("tailscale", "name", "vps"), ("tailscale", "os", "linux")]
+    assert discover.attribute_tailscale(linux, "Dell", random_mac=False) == linux
