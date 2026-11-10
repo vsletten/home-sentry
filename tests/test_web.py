@@ -88,5 +88,6 @@ def test_guides_serves_only_named_html(tmp_path, monkeypatch):
     assert "wifi-cutover" in c.get("/guides").text
     r = c.get("/guides/wifi-cutover")
     assert r.status_code == 200 and "cutover" in r.text
-    for bad in ("../secret", "..%2Fsecret", "Wifi", "x.html", ""):
+    for bad in ("../secret", "..%2Fsecret", "Wifi", "x.html", "secret"):
         assert c.get(f"/guides/{bad}").status_code == 404
+    assert "nope" not in c.get("/guides/").text  # trailing slash -> listing, never file contents
