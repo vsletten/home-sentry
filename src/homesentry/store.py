@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS wizard_turns(
   device_id INTEGER NOT NULL REFERENCES devices(id),
   ts REAL NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, images TEXT
 );
+CREATE TABLE IF NOT EXISTS findings(
+  id INTEGER PRIMARY KEY,
+  device_id INTEGER NOT NULL REFERENCES devices(id),
+  ts REAL NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL,
+  title TEXT NOT NULL, detail TEXT, data TEXT
+);
 CREATE TABLE IF NOT EXISTS scans(
   id INTEGER PRIMARY KEY, started REAL, finished REAL, summary TEXT
 );
@@ -43,26 +49,74 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(devices)")}
+        if "network" not in cols:  # v1 migration: which LAN a device lives on
+            self.db.execute("ALTER TABLE devices ADD COLUMN network TEXT")
+            self.db.commit()
+        if "retired" not in cols:  # decommissioned: hidden, never resurrected by gateway
+            self.db.execute("ALTER TABLE devices ADD COLUMN retired REAL")
+            self.db.commit()
 
     # ---- devices -------------------------------------------------------
-    def upsert_seen(self, mac: str, ip: str, hostname: str | None, oui_vendor: str | None) -> int:
+    def upsert_seen(
+        self,
+        mac: str,
+        ip: str,
+        hostname: str | None,
+        oui_vendor: str | None,
+        network: str | None = None,
+    ) -> int:
         now = time.time()
-        row = self.db.execute("SELECT id FROM devices WHERE mac=?", (mac,)).fetchone()
+        row = self.db.execute("SELECT id, retired FROM devices WHERE mac=?", (mac,)).fetchone()
         if row:
+            if row["retired"]:  # a "decommissioned" device is talking on the LAN again
+                self.db.execute("UPDATE devices SET retired=NULL WHERE id=?", (row["id"],))
+                self.add_evidence(row["id"], "user", "reappeared_after_retire", time.strftime("%F"))
             self.db.execute(
                 "UPDATE devices SET ip=?, hostname=COALESCE(?, hostname),"
-                " oui_vendor=COALESCE(?, oui_vendor), last_seen=? WHERE id=?",
-                (ip, hostname, oui_vendor, now, row["id"]),
+                " oui_vendor=COALESCE(?, oui_vendor), network=COALESCE(?, network),"
+                " last_seen=? WHERE id=?",
+                (ip, hostname, oui_vendor, network, now, row["id"]),
             )
             self.db.commit()
             return row["id"]
         cur = self.db.execute(
-            "INSERT INTO devices(mac, ip, hostname, oui_vendor, first_seen, last_seen)"
-            " VALUES(?,?,?,?,?,?)",
-            (mac, ip, hostname, oui_vendor, now, now),
+            "INSERT INTO devices(mac, ip, hostname, oui_vendor, network, first_seen, last_seen)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (mac, ip, hostname, oui_vendor, network, now, now),
         )
         self.db.commit()
         return int(cur.lastrowid or 0)
+
+    def upsert_known(
+        self,
+        mac: str,
+        ip: str | None,
+        hostname: str | None,
+        oui_vendor: str | None,
+        network: str | None,
+    ) -> int:
+        """A device another source (e.g. the gateway's DHCP table) remembers but we did not
+        see on the wire. Never bumps last_seen; inserts with last_seen NULL (= offline)."""
+        row = self.db.execute("SELECT id FROM devices WHERE mac=?", (mac,)).fetchone()
+        if row:
+            return row["id"]
+        cur = self.db.execute(
+            "INSERT INTO devices(mac, ip, hostname, oui_vendor, network, first_seen)"
+            " VALUES(?,?,?,?,?,?)",
+            (mac, ip, hostname, oui_vendor, network, time.time()),
+        )
+        self.db.commit()
+        return int(cur.lastrowid or 0)
+
+    def retire(self, device_id: int) -> None:
+        self.db.execute("UPDATE devices SET retired=? WHERE id=?", (time.time(), device_id))
+        self.db.execute("DELETE FROM findings WHERE device_id=?", (device_id,))
+        self.db.commit()
+
+    def is_retired(self, mac: str) -> bool:
+        r = self.db.execute("SELECT retired FROM devices WHERE mac=?", (mac,)).fetchone()
+        return bool(r and r["retired"])
 
     def create_manual(self, label: str) -> int:
         now = time.time()
@@ -73,9 +127,10 @@ class Store:
         self.db.commit()
         return int(cur.lastrowid or 0)
 
-    def devices(self) -> list[dict[str, Any]]:
+    def devices(self, include_retired: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_retired else " WHERE retired IS NULL"
         rows = self.db.execute(
-            "SELECT * FROM devices ORDER BY confirmed, confidence, id"
+            f"SELECT * FROM devices{where} ORDER BY confirmed, confidence, id"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -153,6 +208,39 @@ class Store:
             t["images"] = json.loads(t["images"] or "[]")
             out.append(t)
         return out
+
+    # ---- findings ------------------------------------------------------
+    def replace_findings(self, device_id: int, findings: list[dict[str, Any]]) -> None:
+        now = time.time()
+        self.db.execute("DELETE FROM findings WHERE device_id=?", (device_id,))
+        self.db.executemany(
+            "INSERT INTO findings(device_id, ts, severity, kind, title, detail, data)"
+            " VALUES(?,?,?,?,?,?,?)",
+            [
+                (
+                    device_id,
+                    now,
+                    f["severity"],
+                    f["kind"],
+                    f["title"],
+                    f.get("detail"),
+                    json.dumps(f.get("data") or {}),
+                )
+                for f in findings
+            ],
+        )
+        self.db.commit()
+
+    def findings(self, device_id: int | None = None) -> list[dict[str, Any]]:
+        q = "SELECT * FROM findings" + (" WHERE device_id=?" if device_id else "")
+        rows = self.db.execute(q, (device_id,) if device_id else ()).fetchall()
+        out = []
+        for r in rows:
+            f = dict(r)
+            f["data"] = json.loads(f["data"] or "{}")
+            out.append(f)
+        order = ["critical", "high", "medium", "low", "info"]
+        return sorted(out, key=lambda f: order.index(f["severity"]))
 
     # ---- scans ---------------------------------------------------------
     def record_scan(self, started: float, summary: dict[str, Any]) -> None:

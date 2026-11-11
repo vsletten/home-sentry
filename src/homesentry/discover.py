@@ -46,6 +46,89 @@ def lan_context() -> dict[str, str]:
     }
 
 
+VIRTUAL_IFACE = ("lo", "docker", "br-", "veth", "tailscale", "virbr", "tun", "wg", "zt")
+RFC1918 = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+
+
+def is_lan_ip(ip: str) -> bool:
+    """Home-LAN address (RFC 1918). Stricter than ipaddress.is_private, which also says yes to
+    documentation and other reserved ranges."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.version == 4 and any(a in n for n in RFC1918)
+
+
+def lan_contexts() -> list[dict[str, str]]:
+    """Every physical interface with a private IPv4: the default-route LAN first, then any
+    extra legs (a USB-Ethernet into the eero, a Wi-Fi card, ...). Each is scanned."""
+    out = [lan_context()]
+    addrs = json.loads(_run(["ip", "-j", "-4", "addr", "show"]) or "[]")
+    for a in addrs:
+        iface = a.get("ifname", "")
+        if iface == out[0]["iface"] or iface.startswith(VIRTUAL_IFACE):
+            continue
+        for info in a.get("addr_info", []):
+            if not is_lan_ip(info["local"]):
+                continue
+            net = ipaddress.ip_interface(f"{info['local']}/{info['prefixlen']}").network
+            gw = (_run(["nmcli", "-g", "IP4.GATEWAY", "device", "show", iface]) or "").strip()
+            mac_p = Path(f"/sys/class/net/{iface}/address")
+            out.append(
+                {
+                    "iface": iface,
+                    "local_ip": info["local"],
+                    "cidr": str(net),
+                    "gateway": gw,
+                    "mac": mac_p.read_text().strip() if mac_p.exists() else "",
+                }
+            )
+    return out
+
+
+def tailscale_peers() -> dict[str, list[Sighting]]:
+    """Tailscale peers with a direct LAN connection reveal the device's name and OS."""
+    js = _run(["tailscale", "status", "--json"])
+    return parse_tailscale(js or "{}")
+
+
+def parse_tailscale(js: str) -> dict[str, list[Sighting]]:
+    try:
+        peers = (json.loads(js).get("Peer") or {}).values()
+    except json.JSONDecodeError:
+        return {}
+    res: dict[str, list[Sighting]] = {}
+    for p in peers:
+        ip = (p.get("CurAddr") or "").rsplit(":", 1)[0]
+        if not is_lan_ip(ip):
+            continue
+        res.setdefault(ip, []).extend(
+            [("tailscale", "name", p.get("HostName", "")), ("tailscale", "os", p.get("OS", ""))]
+        )
+    return res
+
+
+APPLE_OS = {"macos", "ios", "tvos"}
+
+
+def attribute_tailscale(
+    sightings: list[Sighting], oui_vendor: str | None, random_mac: bool
+) -> list[Sighting]:
+    """A Tailscale peer's LAN endpoint only proves its packets LEAVE from that IP. If the
+    device holding the IP can't be that peer (an Apple OS behind a non-Apple NIC vendor),
+    the device is a NAT box in front of it: record that instead of naming it after the peer.
+    (Learned on a real LAN: a MacBook behind a Linux access point doing NAT.)"""
+    name = next((v for _, k, v in sightings if k == "name"), None)
+    os_ = next((v for _, k, v in sightings if k == "os"), "").lower()
+    if not name:
+        return []
+    fits = os_ not in APPLE_OS or random_mac or "apple" in (oui_vendor or "").lower()
+    if fits:
+        return sightings
+    return [("tailscale", "nat_for", f"{name} ({os_})")]
+
+
 # ---- OUI ---------------------------------------------------------------------
 _oui: dict[str, str] | None = None
 
@@ -163,9 +246,11 @@ UPNP_FIELDS = (
 )  # serialNumber/UDN deliberately not collected
 
 
-def ssdp(seconds: float = 4.0) -> dict[str, list[Sighting]]:
+def ssdp(seconds: float = 4.0, local_ip: str | None = None) -> dict[str, list[Sighting]]:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(0.5)
+    if local_ip:  # send the M-SEARCH out of a specific LAN leg
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip))
     s.sendto(SSDP_MSG, ("239.255.255.250", 1900))
     locations: dict[str, set[str]] = {}
     servers: dict[str, set[str]] = {}

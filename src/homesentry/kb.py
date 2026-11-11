@@ -21,12 +21,15 @@ from . import data_dir
 
 SEED_DIR = Path(__file__).resolve().parents[2] / "kb" / "devices"
 
-# evidence (source, key) -> KB match rule name
+# evidence (source, key) -> KB match rule name.
+# Only MODEL-specific self-reports qualify. Deliberately excluded (learned the hard way):
+#  - UPnP modelDescription: family-level ("DIRECTV Plus HD DVR" is on every DIRECTV box)
+#  - HTTP titles: describe software, not hardware ("Netdata"), and nmap's noise lines
+#    ("Did not follow redirect to http://<your IP>") would leak household data into the KB.
 MATCHABLE = {
     ("ssdp", "modelName"): "ssdp_model",
-    ("ssdp", "modelDescription"): "ssdp_description",
-    ("nmap", "http_title"): "http_title",
 }
+RULES = {"ssdp_model", "mdns_model"}  # the only rule names honored when matching
 GENERIC_SSDP_MODELS = {
     "mediarenderer",
     "mediaserver",
@@ -66,6 +69,8 @@ def match(entries: list[dict[str, Any]], facts: dict[str, set[str]]) -> dict[str
     """facts: rule name -> observed values. Exact, case-insensitive match on any rule."""
     for e in entries:
         for rule, wanted in (e.get("match") or {}).items():
+            if rule not in RULES:  # stale rule types from older KB files are inert
+                continue
             seen = {v.lower() for v in facts.get(rule, set())}
             if any(str(w).lower() in seen for w in wanted or []):
                 return e
@@ -101,7 +106,8 @@ def learn(identity: dict[str, Any], evidence: list[dict[str, Any]], out_dir: Pat
     entry.setdefault("model", model)
     if identity.get("device_type"):
         entry["device_type"] = identity["device_type"]
-    rules = entry.setdefault("match", {})
+    rules = {k: v for k, v in (entry.get("match") or {}).items() if k in RULES}
+    entry["match"] = rules
     for rule, values in facts_from_evidence(evidence).items():
         merged = set(rules.get(rule, [])) | values
         rules[rule] = sorted(merged)
