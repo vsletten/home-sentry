@@ -110,20 +110,55 @@ def parse_tailscale(js: str) -> dict[str, list[Sighting]]:
 
 
 APPLE_OS = {"macos", "ios", "tvos"}
+# NICs Macs commonly reach the LAN through: USB/Thunderbolt Ethernet dongles and docks.
+ADAPTER_VENDORS = re.compile(
+    r"ugreen|realtek|asix|belkin|anker|plugable|cable matters|startech|satechi|caldigit|"
+    r"owc|other world|j5create|targus|kensington|d-link|tp-link|lenovo|dell|hp inc|"
+    r"microsoft|ezcast|club 3d|sabrent|wavlink|amazon",
+    re.I,
+)
+# mDNS services only Apple devices publish
+APPLE_SELF = {"_companion-link._tcp", "_airplay._tcp", "_raop._tcp", "_apple-mobdev2._tcp"}
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower().replace("’", "").replace("'", ""))
 
 
 def attribute_tailscale(
-    sightings: list[Sighting], oui_vendor: str | None, random_mac: bool
+    sightings: list[Sighting],
+    oui_vendor: str | None,
+    random_mac: bool,
+    self_reports: list[Sighting] | None = None,
 ) -> list[Sighting]:
     """A Tailscale peer's LAN endpoint only proves its packets LEAVE from that IP. If the
-    device holding the IP can't be that peer (an Apple OS behind a non-Apple NIC vendor),
-    the device is a NAT box in front of it: record that instead of naming it after the peer.
-    (Learned on a real LAN: a MacBook behind a Linux access point doing NAT.)"""
+    device holding the IP can't be that peer (an Apple OS behind a non-Apple NIC vendor,
+    and the device itself doesn't speak like a Mac), it's a NAT box in front of the peer:
+    record that instead of naming it after the peer.
+
+    Learned on a real LAN, both directions:
+      - a MacBook behind a Linux access point doing NAT (non-Apple OUI, silent mDNS) -> NAT
+      - a MacBook on a UGREEN USB-Ethernet dongle (non-Apple OUI, but it announces itself
+        over mDNS with Apple-only services and its own name) -> it IS the peer
+    """
     name = next((v for _, k, v in sightings if k == "name"), None)
     os_ = next((v for _, k, v in sightings if k == "os"), "").lower()
     if not name:
         return []
-    fits = os_ not in APPLE_OS or random_mac or "apple" in (oui_vendor or "").lower()
+    vendor = oui_vendor or ""
+    selfr = self_reports or []
+    says_mine = any(
+        k in ("host", "name") and _norm(name) and _norm(name) in _norm(v) for _, k, v in selfr
+    )
+    speaks_apple = any(k == "service" and v in APPLE_SELF for _, k, v in selfr)
+    fits = (
+        os_ not in APPLE_OS
+        or random_mac
+        or "apple" in vendor.lower()
+        or says_mine
+        or speaks_apple
+        or bool(ADAPTER_VENDORS.search(vendor))
+    )
     if fits:
         return sightings
     return [("tailscale", "nat_for", f"{name} ({os_})")]
@@ -301,10 +336,11 @@ def parse_upnp_description(xml: str) -> set[Sighting]:
 
 
 # ---- nmap service scan (optional, slower) ------------------------------------
-def service_scan(ips: list[str], top_ports: int = 100) -> dict[str, list[Sighting]]:
+def service_scan(ips: list[str], top_ports: int = 100) -> dict[str, list[Sighting]] | None:
+    """Open ports + versions per host. None if the scan didn't run (vs {} = nothing open)."""
     nmap = shutil.which("nmap")
     if not nmap or not ips:
-        return {}
+        return None
     xml = _run(
         [
             nmap,
@@ -323,7 +359,9 @@ def service_scan(ips: list[str], top_ports: int = 100) -> dict[str, list[Sightin
         ],
         timeout=900,
     )
-    return parse_nmap_xml(xml or "")
+    if not xml or "<nmaprun" not in xml:
+        return None  # nmap missing/failed: callers must NOT treat this as "all ports closed"
+    return parse_nmap_xml(xml)
 
 
 def parse_nmap_xml(xml: str) -> dict[str, list[Sighting]]:

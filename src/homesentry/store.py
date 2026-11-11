@@ -37,6 +37,22 @@ CREATE TABLE IF NOT EXISTS findings(
 CREATE TABLE IF NOT EXISTS scans(
   id INTEGER PRIMARY KEY, started REAL, finished REAL, summary TEXT
 );
+-- v2: what changed between scans (the timeline). Titles never embed device names:
+-- the UI renders the label from device_id, so events are safe to hand to the LLM.
+CREATE TABLE IF NOT EXISTS events(
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, kind TEXT NOT NULL, severity TEXT NOT NULL,
+  device_id INTEGER, title TEXT NOT NULL, detail TEXT, data TEXT
+);
+CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+-- v2: owner said "I know, I accept this" (keyed by stable finding key, not title text)
+CREATE TABLE IF NOT EXISTS risk_accepts(
+  id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL, fkey TEXT NOT NULL, note TEXT,
+  ts REAL NOT NULL, UNIQUE(device_id, fkey)
+);
+-- v2: household Q&A history (device references are handles like [D7], never names)
+CREATE TABLE IF NOT EXISTS ask_turns(
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL
+);
 """
 
 IDENTITY_FIELDS = ("label", "device_type", "make", "model", "firmware", "notes")
@@ -55,6 +71,9 @@ class Store:
             self.db.commit()
         if "retired" not in cols:  # decommissioned: hidden, never resurrected by gateway
             self.db.execute("ALTER TABLE devices ADD COLUMN retired REAL")
+            self.db.commit()
+        if "online" not in cols:  # v2: answered in the most recent scan (NULL = never scanned)
+            self.db.execute("ALTER TABLE devices ADD COLUMN online INTEGER")
             self.db.commit()
 
     # ---- devices -------------------------------------------------------
@@ -183,6 +202,13 @@ class Store:
         self.db.execute("DELETE FROM evidence WHERE device_id=? AND source=?", (device_id, source))
         self.db.commit()
 
+    def delete_evidence(self, device_id: int, source: str, key: str) -> None:
+        self.db.execute(
+            "DELETE FROM evidence WHERE device_id=? AND source=? AND key=?",
+            (device_id, source, key),
+        )
+        self.db.commit()
+
     def evidence(self, device_id: int) -> list[dict[str, Any]]:
         rows = self.db.execute(
             "SELECT source, key, value, ts FROM evidence WHERE device_id=? ORDER BY source, key",
@@ -257,3 +283,106 @@ class Store:
         d = dict(r)
         d["summary"] = json.loads(d["summary"] or "{}")
         return d
+
+    def scans(self, limit: int = 60) -> list[dict[str, Any]]:
+        """Most recent scans, oldest first (for trend lines)."""
+        rows = self.db.execute("SELECT * FROM scans ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        out = []
+        for r in reversed(rows):
+            d = dict(r)
+            d["summary"] = json.loads(d["summary"] or "{}")
+            out.append(d)
+        return out
+
+    def last_scan_with(self, key: str) -> dict[str, Any] | None:
+        """Most recent scan whose summary has `key` truthy (e.g. 'ports', 'gateway')."""
+        for r in self.db.execute("SELECT * FROM scans ORDER BY id DESC LIMIT 500"):
+            s = json.loads(r["summary"] or "{}")
+            if s.get(key):
+                return dict(r, summary=s)
+        return None
+
+    def mark_presence(self, started: float) -> None:
+        """After a scan: a device is online iff it answered during this scan."""
+        self.db.execute(
+            "UPDATE devices SET online = CASE WHEN last_seen >= ? THEN 1 ELSE 0 END"
+            " WHERE mac IS NOT NULL",
+            (started,),
+        )
+        self.db.commit()
+
+    # ---- events (v2) ---------------------------------------------------
+    def add_events(self, events: list[dict[str, Any]], ts: float | None = None) -> None:
+        ts = ts or time.time()
+        self.db.executemany(
+            "INSERT INTO events(ts, kind, severity, device_id, title, detail, data)"
+            " VALUES(?,?,?,?,?,?,?)",
+            [
+                (
+                    ts,
+                    e["kind"],
+                    e["severity"],
+                    e.get("device_id"),
+                    e["title"],
+                    e.get("detail"),
+                    json.dumps(e.get("data") or {}),
+                )
+                for e in events
+            ],
+        )
+        self.db.commit()
+
+    def events(
+        self, limit: int = 100, since: float | None = None, device_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        q, args = "SELECT * FROM events WHERE 1=1", []
+        if since is not None:
+            q += " AND ts >= ?"
+            args.append(since)
+        if device_id is not None:
+            q += " AND device_id = ?"
+            args.append(device_id)
+        q += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        out = []
+        for r in self.db.execute(q, args):
+            e = dict(r)
+            e["data"] = json.loads(e["data"] or "{}")
+            out.append(e)
+        return out
+
+    # ---- risk acceptance (v2) ------------------------------------------
+    def accept_risk(self, device_id: int, fkey: str, note: str = "") -> None:
+        self.db.execute(
+            "INSERT INTO risk_accepts(device_id, fkey, note, ts) VALUES(?,?,?,?)"
+            " ON CONFLICT(device_id, fkey) DO UPDATE SET note=excluded.note, ts=excluded.ts",
+            (device_id, fkey, note.strip()[:500], time.time()),
+        )
+        self.db.commit()
+
+    def unaccept_risk(self, device_id: int, fkey: str) -> None:
+        self.db.execute("DELETE FROM risk_accepts WHERE device_id=? AND fkey=?", (device_id, fkey))
+        self.db.commit()
+
+    def accepted(self) -> dict[tuple[int, str], dict[str, Any]]:
+        return {
+            (r["device_id"], r["fkey"]): dict(r)
+            for r in self.db.execute("SELECT * FROM risk_accepts")
+        }
+
+    # ---- household Q&A (v2) --------------------------------------------
+    def add_ask(self, role: str, content: str) -> None:
+        self.db.execute(
+            "INSERT INTO ask_turns(ts, role, content) VALUES(?,?,?)", (time.time(), role, content)
+        )
+        self.db.commit()
+
+    def ask_turns(self, limit: int = 40) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT * FROM ask_turns ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def clear_ask(self) -> None:
+        self.db.execute("DELETE FROM ask_turns")
+        self.db.commit()

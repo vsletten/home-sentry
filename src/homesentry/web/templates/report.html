@@ -1,0 +1,82 @@
+{% import "_ui.html" as ui %}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home security report · {{ generated }}</title>
+<style>
+:root{--bg:#fff;--card:#fff;--ink:#1d1f24;--mute:#666b74;--line:#e3e1d9;--acc:#2f6fed;--ok:#1f9d55;--warn:#d98e04;--bad:#d64545;--chip:#efeee8}
+@media screen and (prefers-color-scheme:dark){:root{--bg:#121417;--card:#1b1e23;--ink:#e8e9ec;--mute:#9298a2;--line:#2a2e35;--chip:#252930}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:900px;margin:0 auto;padding:28px 22px 60px}
+h1{font-size:26px;margin:0}h2{font-size:16px;margin:28px 0 8px;padding-top:10px;border-top:1px solid var(--line)}
+.mute{color:var(--mute)}.small{font-size:12.5px}
+.chip{display:inline-block;background:var(--chip);border-radius:999px;padding:1px 8px;font-size:11.5px;color:var(--mute)}
+.chip.critical{background:#7b1fa222;color:#9c4dcc}.chip.high{background:#d6454522;color:var(--bad)}
+.chip.medium{background:#d98e0422;color:var(--warn)}.chip.low{background:#2f6fed1a;color:var(--acc)}.chip.ok{background:#1f9d5522;color:var(--ok)}
+.top{display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;margin-top:16px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.kpi{border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.kpi b{display:block;font-size:20px}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:6px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:600;font-size:12px}
+ol.acts{padding-left:20px}ol.acts li{margin:8px 0}
+.ev{display:flex;gap:10px;padding:5px 0;border-top:1px solid var(--line)}.ev:first-child{border-top:0}.evi{width:20px}
+.note{border-left:4px solid var(--warn);padding:6px 12px;background:#d98e040f;border-radius:6px}
+a{color:var(--acc);text-decoration:none}
+.print{float:right}
+@media print{.print{display:none}a{color:inherit}h2{break-after:avoid}tr,li{break-inside:avoid}}
+</style></head>
+<body><main>
+<button class="print" onclick="window.print()">🖨️ Print / PDF</button>
+<div class="mute small">🛡️ HomeSentry v{{ version }} · household security report</div>
+<h1>Home network security report</h1>
+<div class="mute">{{ generated }}{% if last_scan %} · data from the scan {{ ago(last_scan.finished) }}{% endif %}</div>
+
+<div class="top">
+  <div>{{ ui.gauge(plan.score, plan.grade, 190) }}</div>
+  <div>
+    <div class="kpis">
+      <div class="kpi"><b>{{ devices|length }}</b><span class="small mute">devices</span></div>
+      <div class="kpi"><b style="color:#9c4dcc">{{ plan.counts.critical }}</b><span class="small mute">critical</span></div>
+      <div class="kpi"><b style="color:var(--bad)">{{ plan.counts.high }}</b><span class="small mute">high</span></div>
+      <div class="kpi"><b style="color:var(--warn)">{{ plan.counts.medium }}</b><span class="small mute">medium</span></div>
+    </div>
+    <p style="margin:10px 0 0">{% if plan.projected %}Doing the top three actions below takes the score from <b>{{ plan.score }}</b> to
+      <b style="color:var(--ok)">{{ plan.projected[2] if plan.projected|length > 2 else plan.projected[-1] }}</b>.{% endif %}
+      {% if outside %}From the internet, <b>{{ outside.open|length }}</b> of {{ outside.scanned }} TCP ports answer
+      (checked {{ ago(outside.ts) }} from your own probe host).{% endif %}</p>
+    <div style="margin-top:6px">{{ ui.spark(trend, 260, 40) }}</div>
+  </div>
+</div>
+
+<h2>What to do, in order</h2>
+<ol class="acts">
+{% for a in plan.actions[:8] %}
+  <li><b>{{ a.rendered }}</b> <span class="chip {{ a.worst }}">{{ a.worst }}</span>
+    <span class="small mute">· +{{ a.gain|round(1) }} score · {{ a.effort_min }} min · {{ a.who }}</span>
+    <div class="small">{{ a.why }}</div></li>
+{% else %}<li>Nothing open. Keep the watch timer running.</li>{% endfor %}
+</ol>
+{% if plan.actions|length > 8 %}<p class="small mute">+ {{ plan.actions|length - 8 }} smaller actions in the app's Plan page.</p>{% endif %}
+
+<h2>Last {{ days }} days</h2>
+{% if good_news %}<p>✅ <b>{{ good_news|length }}</b> improvement{{ "s" if good_news|length != 1 }}: {% for e in good_news[:6] %}{{ names.get(e.device_id, "household") }}: {{ e.title }}{{ "; " if not loop.last }}{% endfor %}.</p>{% endif %}
+{% for e in events[:25] %}{{ ui.event_row(e, names) }}{% else %}<p class="mute">No changes recorded this week.</p>{% endfor %}
+
+<h2>Inventory</h2>
+<table>
+<tr><th></th><th>Device</th><th>Make · model</th><th>Firmware</th><th>Address</th><th>Risk</th></tr>
+{% for d in devices %}
+<tr><td>{{ icon(d.device_type) }}</td><td>{{ d.label or d.model or d.make or "Unknown" }}{% if d.confirmed %} <span class="chip ok">✓</span>{% endif %}</td>
+<td>{{ d.make or "?" }} · {{ d.model or "?" }}</td><td>{{ d.firmware or "–" }}</td><td>{{ d.ip or "–" }}{% if d.online == 0 %} <span class="chip">offline</span>{% endif %}</td>
+<td>{% if worst.get(d.id) %}<span class="chip {{ worst[d.id] }}">{{ worst[d.id] }}</span>{% else %}<span class="chip ok">ok</span>{% endif %}</td></tr>
+{% endfor %}
+</table>
+
+<h2>What this report can't see</h2>
+<div class="note small">
+<ul style="margin:4px 0;padding-left:18px">
+{% for n in hidden %}<li><b>{{ n.label }}</b> runs its own NAT network: devices on its Wi-Fi are invisible to scans{% if n.hidden %} (known behind it: {{ n.hidden|join(", ") }}){% endif %}.</li>{% endfor %}
+<li>Vulnerabilities are matched from service banners: treat them as leads to confirm, not proof.</li>
+<li>The outside-in check covers about 1,000 TCP ports on IPv4. UDP and the LAN's public IPv6 addresses are not tested yet.</li>
+<li>Threat intel (CISA KEV, NVD) {% if kev_age_h is not none %}was refreshed {{ kev_age_h }}h ago{% else %}has not been downloaded yet{% endif %}.</li>
+</ul></div>
+<p class="small mute" style="margin-top:24px">Generated locally on this box. No device names, addresses or findings left the house to build it.</p>
+</main></body></html>

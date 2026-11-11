@@ -4,7 +4,7 @@ KB entries hold only GENERIC device knowledge (make/model/type, how to recognize
 notes). Never household data: no MACs, serials, IPs, names. That keeps the KB shareable
 and lets it grow into the subscription-side KB later.
 
-Read from: the repo seed dir (kb/devices) + the local learned dir (data_dir()/kb).
+Read from: the packaged seed dir (kbdata/devices) + the local learned dir (data_dir()/kb).
 Write to: the local learned dir only.
 """
 
@@ -19,7 +19,8 @@ import yaml
 
 from . import data_dir
 
-SEED_DIR = Path(__file__).resolve().parents[2] / "kb" / "devices"
+# Shipped with the package (so `uv tool install` / wheels carry it): the KB "pack".
+SEED_DIR = Path(__file__).parent / "kbdata" / "devices"
 
 # evidence (source, key) -> KB match rule name.
 # Only MODEL-specific self-reports qualify. Deliberately excluded (learned the hard way):

@@ -1,8 +1,9 @@
-"""homesentry scan | list | serve"""
+"""homesentry scan | list | threats | gateway | outside | watch | plan | report | doctor | serve"""
 
 from __future__ import annotations
 
 import argparse
+import os
 
 from . import data_dir
 from .store import Store
@@ -17,8 +18,21 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("threats", help="re-run the threat pass on the current inventory")
     sub.add_parser("gateway", help="read the gateway admin pages (read-only) and summarize")
     sub.add_parser("outside", help="outside-in TCP exposure check from your probe host")
+    w = sub.add_parser("watch", help="one monitoring tick (what the systemd timer runs)")
+    w.add_argument("--ports-every", type=float, default=12, help="hours between port scans")
+    w.add_argument("--gateway-every", type=float, default=6, help="hours between gateway reads")
+    w.add_argument("--outside-every", type=float, default=24, help="hours between outside-in")
+    w.add_argument("--no-notify", action="store_true")
+    sub.add_parser("plan", help="posture score and the ranked action plan")
+    r = sub.add_parser("report", help="write the household security report (HTML)")
+    r.add_argument("-o", "--out", default="homesentry-report.html")
+    sub.add_parser("doctor", help="health checks (tools, configs, scans, units)")
     v = sub.add_parser("serve", help="run the web UI")
-    v.add_argument("--host", default="127.0.0.1")
+    v.add_argument(
+        "--host",
+        default=os.environ.get("HOMESENTRY_BIND", "127.0.0.1"),
+        help="bind address (default $HOMESENTRY_BIND, else loopback; use your tailnet IP)",
+    )
     v.add_argument("--port", type=int, default=8720)
     a = ap.parse_args(argv)
 
@@ -26,8 +40,46 @@ def main(argv: list[str] | None = None) -> None:
     if a.cmd == "scan":
         from .scan import run_scan
 
-        run_scan(store, ports=a.ports)
+        run_scan(store, ports=a.ports, extra={"trigger": "cli"})
         a.cmd = "list"
+    if a.cmd == "watch":
+        from .watch import ScanBusy, run_watch
+
+        try:
+            run_watch(
+                store,
+                ports_every_h=a.ports_every,
+                gateway_every_h=a.gateway_every,
+                outside_every_h=a.outside_every,
+                notify=not a.no_notify,
+            )
+        except ScanBusy as e:
+            print(f"skipped: {e}")
+        return
+    if a.cmd == "plan":
+        from . import plan
+
+        names = {d["id"]: d["label"] or d["ip"] or "device" for d in store.devices()}
+        p = plan.build(store)
+        print(f"posture {p['score']}/100 ({p['grade']}); after top actions: {p['projected']}")
+        for i, act in enumerate(p["actions"], 1):
+            qw = " quick win" if act["quick_win"] else ""
+            print(
+                f"{i:>3}. +{act['gain']:<5} {act['effort_min']:>4}m [{act['worst']}] "
+                f"{plan.render_title(act, names.get)}{qw}"
+            )
+        return
+    if a.cmd == "report":
+        from pathlib import Path
+
+        from . import report
+
+        print(report.write(store, Path(a.out)).resolve())
+        return
+    if a.cmd == "doctor":
+        from . import doctor
+
+        raise SystemExit(doctor.main(store))
     if a.cmd == "outside":
         from . import outside
 
@@ -40,7 +92,7 @@ def main(argv: list[str] | None = None) -> None:
 
         creds = gateway.load_credentials()
         if not creds:
-            raise SystemExit(f"no credentials: create {gateway.ENV_PATH} (mode 600)")
+            raise SystemExit(f"no credentials: create {gateway.env_path()} (mode 600)")
         cfg = gateway.RdkbReader(discover.lan_context()["gateway"]).read(*creds)
         clients = cfg.pop("clients")
         print(json.dumps(cfg, indent=1))

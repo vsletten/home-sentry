@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %} · Map{% endblock %}
+{% block body %}
+<style>
+.mapwrap{overflow-x:auto;padding:8px}.mapwrap svg{min-width:{{ min_w }}px;max-width:100%;height:auto;display:block;margin:0 auto}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--mute);margin:8px 0 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+</style>
+<h1 style="margin:0 0 4px;font-size:22px">Network map</h1>
+<p class="mute small" style="margin:0 0 10px">Every device, grouped by what it does. Color = worst open risk. Faded = offline.
+Dashed pockets are private networks a box runs behind its own NAT: devices in there are invisible to the gateway and to scans.</p>
+<div class="card mapwrap">{{ svg }}</div>
+<div class="legend">
+  <span><i style="background:#9c4dcc"></i>critical</span><span><i style="background:var(--bad)"></i>high</span>
+  <span><i style="background:var(--warn)"></i>medium</span><span><i style="background:#8aa4d6"></i>low</span>
+  <span><i style="background:var(--ok)"></i>no open risks</span><span>✓ owner-confirmed</span><span>🙈 hidden network</span>
+</div>
+{% endblock %}

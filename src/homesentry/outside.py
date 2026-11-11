@@ -19,7 +19,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-CONF = Path("~/.config/homesentry/probe.env").expanduser()
+
+def conf_path() -> Path:
+    from . import config_dir
+
+    return config_dir() / "probe.env"
+
+
 NMAP_SERVICES = [
     Path("/usr/share/nmap/nmap-services"),
     Path("/snap/nmap/current/usr/share/nmap/nmap-services"),
@@ -93,7 +99,8 @@ asyncio.run(main())
 """
 
 
-def load_conf(path: Path = CONF) -> dict[str, str] | None:
+def load_conf(path: Path | None = None) -> dict[str, str] | None:
+    path = path or conf_path()
     if not path.exists():
         return None
     out = {}
@@ -139,13 +146,13 @@ def run_probe(conf: dict[str, str], ports: list[int], runner=subprocess.run) -> 
     return res
 
 
-def run_and_record(store, log=print) -> dict[str, Any] | None:
+def run_and_record(store, log=print, rethreat: bool = True) -> dict[str, Any] | None:
     """Probe, then attach the result to the gateway device (where WAN exposure lives)."""
     from . import discover, threat
 
     conf = load_conf()
     if not conf:
-        log(f"outside-in: not configured (create {CONF} with PROBE_SSH=<ssh alias>)")
+        log(f"outside-in: not configured (create {conf_path()} with PROBE_SSH=<ssh alias>)")
         return None
     ports = top_ports()
     log(f"outside-in: probing {len(ports)} TCP ports from {conf['PROBE_SSH']} ...")
@@ -156,7 +163,8 @@ def run_and_record(store, log=print) -> dict[str, Any] | None:
     if gw:
         store.clear_evidence(gw["id"], "outside")
         store.add_evidence(gw["id"], "outside", "result", json.dumps(res))
-        threat.run(store, log=log)
+        if rethreat:  # the watch loop runs the threat pass itself right after
+            threat.run(store, log=log)
     return res
 
 

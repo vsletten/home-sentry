@@ -1,22 +1,66 @@
 # home-sentry
 
-Local-first home network security prototype: discover devices, identify them
-(auto + AI-guided wizard with photos), and, next, build threat profiles.
+Local-first home network security appliance: discover every device, identify it
+(rules, learned KB, AI-guided photo wizard), build threat profiles, watch for change, and
+turn it all into a score and a short, ranked list of things to actually do.
 
 **Privacy line:** the inventory, photos and evidence stay on the box
 (`~/.local/share/homesentry/`). Only wizard inference requests leave, and those carry
 the MAC *vendor* only, never MACs, IPs or serials. UPnP serial numbers are never collected.
 
-## v0 shape
+## Shape
 
 ```
-discover (ARP sweep · mDNS · SSDP/UPnP · nmap -sV, all unprivileged)
+discover (ARP sweep · mDNS · SSDP/UPnP · nmap -sV · gateway reader · tailscale, unprivileged)
    → evidence (SQLite)
    → identify (deterministic rules + learned KB)        ← no LLM, free, instant
    → wizard  (photo → vision reader → transcript; glm-5.3 reasons)  ← what rules can't pin
    → confirm (locks identity, teaches the KB)
    → threats (exposure rules · EOL kernels · CVE leads: NVD per product + CISA KEV)
+   → watch   (snapshot before/after every scan → diff → timeline events → optional push)
+   → plan    (posture score 0-100 · findings → playbooks → actions ranked by gain/minute)
+   → ask     (household analyst over the whole picture, devices as opaque handles)
 ```
+
+| Page | What it's for |
+|---|---|
+| **Overview** | Score gauge + trend, the next three actions, recent changes, devices by network |
+| **Plan** | Every action ranked by score gained per minute, with steps, the devices it covers, a score ladder, and *accept risk* (with a reason) for things you won't fix |
+| **Map** | Server-rendered SVG topology, zero JS: lanes by role, color = worst risk, and dashed *hidden network* pockets for boxes that NAT their own clients |
+| **Timeline** | New devices, ports opening/closing, firmware updates, findings appearing/escalating/resolving, infrastructure going dark |
+| **Ask** | "What should I fix first?" Chat with an analyst that sees the whole house |
+| **Report** | One printable page (`homesentry report -o x.html`): score, plan, week's changes, inventory, blind spots |
+| **Guides** | Local runbooks (e.g. a Wi-Fi cutover), strict slug names, read-only |
+
+**Monitoring.** `homesentry watch` is one tick: quick scan always, port scan every 12h,
+gateway read every 6h, outside-in every 24h (each only if configured). Every scan diffs a
+before/after snapshot into the timeline. The first port scan of a device is a baseline (no
+"port opened" storm), a failed nmap is never read as "everything closed", and only
+infrastructure (gateway, NAS, APs...) going offline is news: laptops sleeping isn't.
+A file lock keeps the timer and the Scan button from racing.
+
+**Score.** 100 minus a weight per open finding (critical 10 · high 5 · medium 2 · low 0.5).
+Each device's total saturates smoothly toward 18, so one hopeless box can't sink the house
+alone but every fix on it still moves the score. Unidentified devices cost 1 each (max 6).
+Accepted risks don't count, and they're keyed by finding *identity*: the CVE count rising
+doesn't resurrect them, a different version does.
+
+**Playbooks** (`src/homesentry/kbdata/playbooks.yaml`, override or extend with
+`~/.local/share/homesentry/kb/playbooks.yaml`) map findings to plain-language actions with
+effort, who does it, and steps. A device-level playbook (e.g. *cloud-managed ISP Wi-Fi:
+replace it*) claims every finding on that device, so you get one real fix instead of six
+symptoms. Household playbooks group the same fix across devices ("update the two Macs").
+
+**Ask HomeSentry's privacy line.** The analyst gets the inventory as opaque handles (`[D7]`)
+plus type, make, model, firmware and findings, never labels, hostnames, IPs or MACs. Your
+question is rewritten the same way before it leaves (names → handles, any IP/MAC →
+redacted), and the answer is turned back into clickable device names locally.
+
+**Alerts (optional).** `~/.config/homesentry/notify.env` (mode 600) with
+`NOTIFY_URL=` (an ntfy topic or any webhook), optional `NOTIFY_TOKEN=`,
+`NOTIFY_MIN_SEVERITY=medium`. A push leaves the house, so it names devices by *type* only
+("nas: Went offline"); `NOTIFY_NAMES=1` opts in to your labels. Event titles never carry IPs
+or MACs. Off unless configured; a failed push never breaks a scan.
 
 **Threat intel is pull-only:** NVD is queried per `vendor:product` with no version, KEV is
 downloaded whole, and all version matching happens locally. Cached in
@@ -47,7 +91,7 @@ ever talk on the LAN again.
 (USB-Ethernet into a mesh router, a Wi-Fi card, ...). Tailscale peers with a direct LAN
 path add device names and OS.
 
-The KB (`kb/devices/*.yaml` seed + `~/.local/share/homesentry/kb/` learned) holds generic
+The KB (`src/homesentry/kbdata/devices/*.yaml` seed + `~/.local/share/homesentry/kb/` learned) holds generic
 device knowledge only, so the next device of the same model is recognized automatically.
 
 ## Run
@@ -57,13 +101,34 @@ uv sync -p 3.13
 .venv/bin/homesentry scan            # ~10s; add --ports for an nmap service scan (~90s)
 .venv/bin/homesentry list
 .venv/bin/homesentry threats        # re-run the threat pass (cached intel, ~2s)
+.venv/bin/homesentry plan           # score + ranked actions in the terminal
+.venv/bin/homesentry report -o report.html
+.venv/bin/homesentry doctor         # tools, config file modes, intel age, scan age, units
 OLLAMA_API_KEY=... .venv/bin/homesentry serve --host <tailnet-ip> --port 8720
 ```
+
+### Install as an appliance (systemd user units)
+
+```bash
+uv tool install --force --reinstall /path/to/home-sentry/main   # → ~/.local/bin/homesentry
+echo "HOMESENTRY_BIND=<tailnet-ip>" >> ~/.config/homesentry/env  # + OLLAMA_API_KEY=...
+chmod 600 ~/.config/homesentry/env
+cp deploy/systemd/homesentry*.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now homesentry.service homesentry-watch.timer
+loginctl enable-linger "$USER"     # keep running without a login session
+homesentry doctor
+```
+
+The UI binds `$HOMESENTRY_BIND` (loopback if unset, never all interfaces) and has no login:
+put it on an address only you can reach, like a tailnet IP. `/healthz` returns 503 when the
+last scan is older than 6h, for whatever watches your watchers.
 
 Env: `OLLAMA_API_KEY`; `HOMESENTRY_MODEL` (reasoning, default `glm-5.3`, needs no vision);
 `HOMESENTRY_VISION_MODEL` (photo reader, default `glm-5.3-flash`, must list `vision` in
 `/api/show` capabilities); `HOMESENTRY_THINK` (default `low`); `HOMESENTRY_LLM_BASE`
-(default `https://ollama.com`; a local Ollama works); `HOMESENTRY_HOME` (data dir).
+(default `https://ollama.com`; a local Ollama works); `HOMESENTRY_HOME` (data dir);
+`HOMESENTRY_CONFIG` (secrets dir, default `~/.config/homesentry`); `HOMESENTRY_BIND`.
 
 Photo turns run in two stages: the vision model transcribes the photo (serials masked), then
 the reasoning model works from the transcript. The transcript stays in the chat history.
@@ -73,3 +138,7 @@ the reasoning model works from the transcript. The transcript stays in the chat 
 ```bash
 .venv/bin/python -m pytest -q && .venv/bin/ruff check .
 ```
+
+`tests/conftest.py` points `HOMESENTRY_HOME` and `HOMESENTRY_CONFIG` at a fresh temp dir for
+every test, so no test can read the owner's real gateway password or log in to real hardware.
+Fixtures are synthetic (`10.99.0.0/24`, `00:11:22:*`): never paste real scan output into tests.
