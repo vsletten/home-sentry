@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %} · Timeline{% endblock %}
+{% block body %}
+<style>.day{font-size:13px;color:var(--mute);font-weight:650;margin:18px 0 6px;letter-spacing:.3px}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}</style>
+<h1 style="margin:0 0 4px;font-size:22px">Timeline</h1>
+<p class="mute small" style="margin:0">What changed between scans: new devices, ports opening and closing, firmware updates,
+findings appearing and getting fixed. {% if watch %}Automatic scans run every {{ watch }}.{% else %}Turn on the watch timer to fill this in automatically.{% endif %}</p>
+<div class="filters">
+  <a class="chip {{ 'ok' if not only }}" href="/timeline">everything</a>
+  <a class="chip {{ 'ok' if only == 'important' }}" href="/timeline?only=important">important only</a>
+  <a class="chip {{ 'ok' if only == 'good' }}" href="/timeline?only=good">good news</a>
+</div>
+{% for day, evs in days %}
+<div class="day">{{ day }}</div>
+<div class="card">{% for e in evs %}{{ ui.event_row(e, names) }}{% endfor %}</div>
+{% else %}
+<div class="card mute">Nothing yet. Events appear after the second scan (the first one is the baseline).</div>
+{% endfor %}
+{% endblock %}

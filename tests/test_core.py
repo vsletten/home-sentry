@@ -13,14 +13,14 @@ UPNP_XML = """<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"
 <modelNumber>700</modelNumber><serialNumber>SECRET123</serialNumber></device></root>"""
 
 AVAHI = (
-    "=;enp12s0;IPv4;Macbot\\032Zero;_companion-link._tcp;local;macbot-zero.local;10.1.10.152;"
+    "=;enp12s0;IPv4;Studio\\032Mac;_companion-link._tcp;local;studio-mac.local;10.99.0.152;"
     '49153;"rpBA=XX"\n'
-    "=;enp12s0;IPv4;Macbot\\032Zero;_device-info._tcp;local;macbot-zero.local;10.1.10.152;0;"
+    "=;enp12s0;IPv4;Studio\\032Mac;_device-info._tcp;local;studio-mac.local;10.99.0.152;0;"
     '"model=Macmini9,1"\n'
     "=;docker0;IPv4;ignored;_ssh._tcp;local;x.local;172.17.0.2;22;\n"
 )
 
-NMAP_XML = """<nmaprun><host><address addr="10.1.10.1" addrtype="ipv4"/><ports>
+NMAP_XML = """<nmaprun><host><address addr="10.99.0.1" addrtype="ipv4"/><ports>
 <port protocol="tcp" portid="80"><state state="open"/><service name="http" product="lighttpd"/>
 <script id="http-title" output="Technicolor CGA4131COM"/></port>
 <port protocol="tcp" portid="23"><state state="closed"/></port></ports></host></nmaprun>"""
@@ -40,12 +40,12 @@ def test_parse_oui_and_random_mac():
 def test_parse_neigh_filters_failed_and_v6():
     js = json.dumps(
         [
-            {"dst": "10.1.10.1", "lladdr": "60:3d:26:00:00:01", "state": ["REACHABLE"]},
-            {"dst": "10.1.10.9", "state": ["FAILED"]},
+            {"dst": "10.99.0.1", "lladdr": "60:3d:26:00:00:01", "state": ["REACHABLE"]},
+            {"dst": "10.99.0.9", "state": ["FAILED"]},
             {"dst": "fe80::1", "lladdr": "aa:bb:cc:dd:ee:ff", "state": ["STALE"]},
         ]
     )
-    assert discover.parse_neigh(js) == {"10.1.10.1": "60:3d:26:00:00:01"}
+    assert discover.parse_neigh(js) == {"10.99.0.1": "60:3d:26:00:00:01"}
 
 
 def test_parse_upnp_never_keeps_serial():
@@ -56,15 +56,15 @@ def test_parse_upnp_never_keeps_serial():
 
 def test_parse_avahi_unescapes_and_filters_iface():
     r = discover.parse_avahi(AVAHI, "enp12s0")
-    assert list(r) == ["10.1.10.152"]
-    assert ("mdns", "name", "Macbot Zero") in r["10.1.10.152"]
+    assert list(r) == ["10.99.0.152"]
+    assert ("mdns", "name", "Studio Mac") in r["10.99.0.152"]
 
 
 def test_parse_nmap_xml_open_ports_only():
     r = discover.parse_nmap_xml(NMAP_XML)
-    assert ("nmap", "open_port", "80/tcp http lighttpd") in r["10.1.10.1"]
-    assert ("nmap", "http_title", "Technicolor CGA4131COM") in r["10.1.10.1"]
-    assert len(r["10.1.10.1"]) == 2
+    assert ("nmap", "open_port", "80/tcp http lighttpd") in r["10.99.0.1"]
+    assert ("nmap", "http_title", "Technicolor CGA4131COM") in r["10.99.0.1"]
+    assert len(r["10.99.0.1"]) == 2
 
 
 def test_guess_from_upnp():
@@ -74,7 +74,7 @@ def test_guess_from_upnp():
 
 
 def test_guess_apple_from_mdns():
-    sights = discover.parse_avahi(AVAHI, "enp12s0")["10.1.10.152"]
+    sights = discover.parse_avahi(AVAHI, "enp12s0")["10.99.0.152"]
     g = identify.guess(ev(*sights), "Apple, Inc.")
     assert g["make"] == "Apple" and g["model"] == "Macmini9,1" and g["device_type"] == "computer"
 
@@ -130,7 +130,7 @@ class FakeLLM:
 def test_wizard_turn_redacts_and_applies(tmp_path, monkeypatch):
     monkeypatch.setenv("HOMESENTRY_HOME", str(tmp_path))
     st = Store(tmp_path / "t.db")
-    did = st.upsert_seen("60:3d:26:00:00:01", "10.1.10.1", None, "Technicolor CH USA")
+    did = st.upsert_seen("60:3d:26:00:00:01", "10.99.0.1", None, "Technicolor CH USA")
     st.add_evidence(did, "ssdp", "modelName", "CGA4131COM")
     llm = FakeLLM(
         {
@@ -148,7 +148,7 @@ def test_wizard_turn_redacts_and_applies(tmp_path, monkeypatch):
     )
     reply = wizard.run_turn(st, llm, did, "it's the xfinity box")
     sent = json.dumps(llm.calls[0])
-    assert "60:3d:26" not in sent and "10.1.10.1" not in sent  # no MAC/IP leaves the box
+    assert "60:3d:26" not in sent and "10.99.0.1" not in sent  # no MAC/IP leaves the box
     assert "CGA4131COM" in sent
     assert reply["next"]["kind"] == "photo"
     d = st.device(did)

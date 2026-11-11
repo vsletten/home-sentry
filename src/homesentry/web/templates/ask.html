@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %} · Ask{% endblock %}
+{% block body %}
+<style>
+.chat{display:flex;flex-direction:column;gap:12px;margin:12px 0}
+.msg{padding:11px 14px;border-radius:14px;max-width:min(760px,94%)}
+.msg.user{align-self:flex-end;background:var(--acc);color:#fff;white-space:pre-wrap}
+.msg.assistant{align-self:flex-start;background:var(--card);border:1px solid var(--line)}
+.msg.assistant p{margin:0 0 8px}.msg.assistant p:last-child{margin:0}.msg.assistant ul{margin:4px 0 8px 18px;padding:0}
+.sugs{display:flex;gap:6px;flex-wrap:wrap}.sugs button{font-size:13px}
+.priv{font-size:12px;color:var(--mute)}
+</style>
+<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+  <h1 style="margin:0;font-size:22px">Ask HomeSentry</h1>
+  {% if turns %}<form method="post" action="/ask/clear"><button class="btn sm">New conversation</button></form>{% endif %}
+</div>
+<p class="priv">🔒 The analyst sees devices as anonymous handles plus type, make, model and findings. It never sees names, IPs, MACs or hostnames.
+Names you type are swapped for handles before anything leaves this box, and answers are turned back into names here.</p>
+<div class="chat">
+  {% if not turns %}
+  <div class="msg assistant"><p>Ask me anything about the house: what to fix first, whether a finding is worth losing sleep over,
+    what a device is doing, what changed this week.</p></div>
+  {% endif %}
+  {% for t in turns %}
+    {% if t.role == "user" %}<div class="msg user">{{ t.shown }}</div>
+    {% else %}<div class="msg assistant">{{ t.html }}</div>{% endif %}
+  {% endfor %}
+  {% if error %}<div class="msg assistant" style="border-color:var(--bad)"><p>⚠️ {{ error }}</p></div>{% endif %}
+  <span id="bottom"></span>
+</div>
+<form method="post" action="/ask" onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='Thinking…'">
+  <textarea name="q" rows="2" placeholder="e.g. What's the single most dangerous thing on my network right now?" required>{{ prefill or "" }}</textarea>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px;flex-wrap:wrap">
+    <div class="sugs">
+      {% for s in suggestions %}<button class="btn sm" type="button" onclick="this.form.q.value=this.textContent;this.form.requestSubmit()">{{ s }}</button>{% endfor %}
+    </div>
+    <button class="btn primary">Ask</button>
+  </div>
+</form>
+{% endblock %}

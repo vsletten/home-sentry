@@ -22,7 +22,13 @@ from typing import Any
 
 import httpx
 
-ENV_PATH = Path("~/.config/homesentry/gateway.env").expanduser()
+
+def env_path() -> Path:
+    from . import config_dir
+
+    return config_dir() / "gateway.env"
+
+
 LOGIN = "check.jst"
 LOGOUT = "home_loggedout.jst"
 PAGES = (
@@ -43,7 +49,8 @@ class GatewayError(RuntimeError):
     pass
 
 
-def load_credentials(path: Path = ENV_PATH) -> tuple[str, str] | None:
+def load_credentials(path: Path | None = None) -> tuple[str, str] | None:
+    path = path or env_path()
     if not path.exists():
         return None
     if path.stat().st_mode & 0o077:

@@ -1,0 +1,16 @@
+[Unit]
+Description=HomeSentry monitoring tick (scan, diff, timeline, alerts)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/homesentry/env
+ExecStart=%h/.local/bin/homesentry watch
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=20min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/homesentry
+UMask=0077

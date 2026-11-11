@@ -1,0 +1,46 @@
+{# Shared UI pieces: posture gauge, sparkline, event icon. Pure SVG, no JS. #}
+{% macro grade_color(g) -%}
+{{ {"A": "var(--ok)", "B": "var(--ok)", "C": "var(--warn)", "D": "var(--bad)", "F": "var(--bad)"}.get(g, "var(--mute)") }}
+{%- endmacro %}
+
+{% macro gauge(score, grade, size=180) -%}
+{% set r = 70 %}{% set c = 3.14159 * r %}{% set f = (score or 0) / 100 %}
+<svg viewBox="0 0 180 112" width="{{ size }}" role="img" aria-label="Posture score {{ score }} of 100, grade {{ grade }}">
+  <path d="M20 96 A70 70 0 0 1 160 96" fill="none" stroke="var(--chip)" stroke-width="15" stroke-linecap="round"/>
+  <path d="M20 96 A70 70 0 0 1 160 96" fill="none" stroke="{{ grade_color(grade) }}" stroke-width="15"
+        stroke-linecap="round" stroke-dasharray="{{ '%.1f'|format(f * c) }} {{ '%.1f'|format(c) }}"/>
+  <text x="90" y="82" text-anchor="middle" style="font:800 38px system-ui;fill:var(--ink)">{{ score }}</text>
+  <text x="90" y="104" text-anchor="middle" style="font:650 13px system-ui;fill:{{ grade_color(grade) }}">grade {{ grade }}</text>
+</svg>
+{%- endmacro %}
+
+{% macro spark(values, w=220, h=44) -%}
+{% if values|length > 1 %}
+{% set n = values|length - 1 %}
+<svg viewBox="0 0 {{ w }} {{ h }}" width="{{ w }}" height="{{ h }}" role="img" aria-label="score trend">
+  <polyline fill="none" stroke="var(--acc)" stroke-width="2" stroke-linejoin="round" points="
+  {%- for v in values %}{{ '%.1f'|format(4 + (w - 8) * loop.index0 / n) }},{{ '%.1f'|format(h - 4 - (h - 8) * v / 100) }} {% endfor %}"/>
+  {% set last = values[-1] %}
+  <circle cx="{{ w - 4 }}" cy="{{ '%.1f'|format(h - 4 - (h - 8) * last / 100) }}" r="3.5" fill="var(--acc)"/>
+</svg>
+{% else %}<span class="small mute">trend appears after a few scans</span>{% endif %}
+{%- endmacro %}
+
+{% macro ev_icon(kind) -%}
+{{ {"new_device": "🆕", "reappeared": "👻", "device_offline": "🔌", "device_online": "🔋",
+    "ip_changed": "🔁", "firmware_changed": "⬆️", "port_opened": "🚪", "port_closed": "🔒",
+    "finding_new": "⚠️", "finding_escalated": "🔥", "finding_resolved": "✅", "baseline": "📋",
+    "device_remembered": "💤"}.get(kind, "•") }}
+{%- endmacro %}
+
+{% macro event_row(e, names) -%}
+<div class="ev">
+  <span class="evi">{{ ev_icon(e.kind) }}</span>
+  <div style="min-width:0;flex:1">
+    <div>{% if e.device_id %}<a href="/device/{{ e.device_id }}"><b>{{ names.get(e.device_id, "device") }}</b></a> · {% endif %}{{ e.title }}
+      {% if e.severity in ("critical","high","medium") %}<span class="chip {{ e.severity }}">{{ e.severity }}</span>{% endif %}</div>
+    {% if e.detail %}<div class="small mute">{{ e.detail }}</div>{% endif %}
+  </div>
+  <span class="small mute" style="white-space:nowrap">{{ ago(e.ts) }}</span>
+</div>
+{%- endmacro %}

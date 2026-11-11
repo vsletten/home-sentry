@@ -6,28 +6,49 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from . import discover, identify
+from . import discover, identify, watch
 from . import kb as kblib
 from .store import Store
 
 
-def run_scan(store: Store, ports: bool = False, threats: bool = True, log=print) -> dict[str, Any]:
+def run_scan(
+    store: Store,
+    ports: bool = False,
+    threats: bool = True,
+    gateway: bool = True,
+    log=print,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One full pass. Holds the scan lock (the timer and the UI button never collide),
+    diffs before/after into timeline events and records the posture score."""
+    with watch.scan_lock():
+        return _run_scan(store, ports, threats, gateway, log, extra or {})
+
+
+def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
     started = time.time()
+    before = watch.snapshot(store)
     entries = kblib.load()
     peers = discover.tailscale_peers()
     if peers:
         log(f"Tailscale: {len(peers)} peers with a direct LAN path")
     nets_ctx = discover.lan_contexts()
     nets = [_scan_network(store, ctx, peers, entries, ports, log) for ctx in nets_ctx]
+    ports_ok = bool(ports and nets and all(n["ports_ok"] for n in nets))
     summary: dict[str, Any] = {
         "networks": nets,
         "hosts": sum(n["hosts"] for n in nets),
         "cidr": ", ".join(n["cidr"] for n in nets),
-        "ports": ports,
+        "ports": ports_ok,
+        **extra,
     }
-    gw = _gateway_pass(store, nets_ctx[0] if nets_ctx else None, entries, log)
-    if gw:
-        summary["gateway"] = gw
+    if ports and not ports_ok:
+        log("port scan did not complete; keeping the previous port evidence")
+    if gateway:
+        gw = _gateway_pass(store, nets_ctx[0] if nets_ctx else None, entries, log)
+        if gw:
+            summary["gateway"] = gw
+    store.mark_presence(started)
     if threats:
         from . import threat
 
@@ -35,10 +56,20 @@ def run_scan(store: Store, ports: bool = False, threats: bool = True, log=print)
             summary["findings"] = threat.run(store, log=log)
         except Exception as e:  # noqa: BLE001 - an intel outage must not kill the inventory
             log(f"threat pass failed: {e}")
+    events = watch.diff(before, watch.snapshot(store), ports_scanned=ports_ok)
+    store.add_events(events)
+    summary["events"] = len(events)
+    if events:
+        log(f"changes: {len(events)} ({', '.join(sorted({e['kind'] for e in events}))})")
+    from . import plan
+
+    sc = plan.score(store)
+    summary["score"], summary["grade"] = sc["score"], sc["grade"]
+    log(f"posture: {sc['score']}/100 ({sc['grade']})")
     summary["seconds"] = round(time.time() - started, 1)
     store.record_scan(started, summary)
     log(f"done in {summary['seconds']}s")
-    return summary
+    return summary | {"event_list": events}
 
 
 def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
@@ -52,17 +83,30 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
     log(f"  mDNS: {len(mdns)} hosts advertising")
     ssdp = discover.ssdp(local_ip=ctx["local_ip"])
     log(f"  SSDP/UPnP: {len(ssdp)} hosts")
-    svc = discover.service_scan(list(neigh)) if ports else {}
+    svc = discover.service_scan(list(neigh)) if ports else None
     if ports:
-        log(f"  nmap: {len(svc)} hosts with open ports")
+        log(f"  nmap: {len(svc)} hosts with open ports" if svc is not None else "  nmap: failed")
 
     for ip, mac in neigh.items():
         vendor = discover.oui_vendor(mac)
         did = store.upsert_seen(mac, ip, names.get(ip), vendor, network=ctx["cidr"])
         if discover.is_random_mac(mac):
             store.add_evidence(did, "arp", "mac_randomized", "yes")
-        ts = discover.attribute_tailscale(peers.get(ip, []), vendor, discover.is_random_mac(mac))
-        sightings = mdns.get(ip, []) + ssdp.get(ip, []) + svc.get(ip, []) + ts
+        rnd = discover.is_random_mac(mac)
+        prior = store.evidence(did)
+        selfr = mdns.get(ip, []) + [
+            (e["source"], e["key"], e["value"]) for e in prior if e["source"] == "mdns"
+        ]
+        ts = discover.attribute_tailscale(peers.get(ip, []), vendor, rnd, self_reports=selfr)
+        if ts:  # a fresh Tailscale view replaces the old one (drops stale NAT verdicts)
+            store.clear_evidence(did, "tailscale")
+        elif _stale_nat(prior, vendor, rnd, selfr):
+            # no live sighting this time, but what we know now clears an old NAT verdict
+            store.delete_evidence(did, "tailscale", "nat_for")
+        if svc is not None:  # fresh port view: ports that closed must disappear
+            store.clear_evidence(did, "nmap")
+            store.add_evidence(did, "nmap", "scanned", "yes")
+        sightings = mdns.get(ip, []) + ssdp.get(ip, []) + (svc or {}).get(ip, []) + ts
         for src, key, val in sightings:
             if val:
                 store.add_evidence(did, src, key, val)
@@ -89,6 +133,7 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
         "hosts": len(neigh),
         "mdns": len(mdns),
         "ssdp": len(ssdp),
+        "ports_ok": svc is not None,
     }
 
 
@@ -175,6 +220,17 @@ def _gateway_pass(store, ctx, entries, log) -> dict[str, Any] | None:
         f"{len(cfg['clients'])} DHCP clients, {offline} new offline devices"
     )
     return summary
+
+
+def _stale_nat(prior: list[dict[str, Any]], vendor, rnd: bool, selfr) -> bool:
+    """True if a stored 'NATs peer X' verdict no longer holds given current self-reports."""
+    for e in prior:
+        if e["source"] == "tailscale" and e["key"] == "nat_for":
+            name, _, os_ = e["value"].rpartition(" (")
+            peer = [("tailscale", "name", name), ("tailscale", "os", os_.rstrip(")"))]
+            if discover.attribute_tailscale(peer, vendor, rnd, self_reports=selfr) == peer:
+                return True
+    return False
 
 
 def _label(evidence: list[dict[str, Any]], ptr: str | None) -> str | None:

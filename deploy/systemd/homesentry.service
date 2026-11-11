@@ -1,0 +1,21 @@
+[Unit]
+Description=HomeSentry web UI (tailnet-only)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Owner secrets (OLLAMA_API_KEY, HOMESENTRY_*). Optional: the UI runs without it.
+EnvironmentFile=-%h/.config/homesentry/env
+# Binds $HOMESENTRY_BIND from the env file (your tailnet IP); loopback if unset. Never 0.0.0.0.
+ExecStart=%h/.local/bin/homesentry serve --port 8720
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/homesentry
+UMask=0077
+
+[Install]
+WantedBy=default.target

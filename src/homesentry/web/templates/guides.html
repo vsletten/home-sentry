@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %} · Guides{% endblock %}
+{% block body %}
+<h1 style="margin:0 0 6px;font-size:22px">Guides</h1>
+<p class="mute small">Step-by-step runbooks for this house, kept locally in <code>~/.local/share/homesentry/guides/</code>.</p>
+<div class="card">{% for g in guides %}<div class="ev"><span class="evi">📖</span><a href="/guides/{{ g }}" style="color:var(--acc);font-weight:600">{{ g.replace("-", " ") }}</a></div>
+{% else %}<p class="mute">No guides yet.</p>{% endfor %}</div>
+{% endblock %}

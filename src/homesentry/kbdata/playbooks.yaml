@@ -1,0 +1,264 @@
+# HomeSentry remediation playbooks: GENERIC knowledge only (no household data), so this
+# file is exactly what a subscription KB pack would ship and update.
+#
+# Each finding is claimed by the FIRST playbook whose `match` fits. Match keys (all optional,
+# all must hold):
+#   kind:        list of finding kinds (exposure | eol | cve | config | outside)
+#   title:       regex on the finding title
+#   device_type: list of device types
+#   make:        regex on the device make
+# `covers: device` claims every finding on a matching device: the fix is to replace/regain
+# control of the whole box, so its individual findings aren't separate chores.
+# `group: household` merges matches across devices into one action ("update your computers").
+# {device} in a title is rendered locally (a name in the UI, a [D7] handle for the LLM).
+# effort_min is honest hands-on time, not elapsed time.
+
+- id: cloud-managed-wifi
+  match: {make: "(?i)arista|mojo"}
+  covers: device
+  group: household   # router + APs are one project (one cutover), not N separate chores
+  title: "Get control of your ISP-managed Wi-Fi ({device}): replace it or get into its cloud console"
+  who: you + ISP
+  effort_min: 120
+  guide: wifi-cutover
+  why: >-
+    Enterprise Wi-Fi gear managed from someone else's cloud: no local admin page, old
+    firmware you can't update, and its settings (router vs bridge mode, SSH) are out of
+    your hands. If whoever holds the cloud account won't maintain it, replace it with
+    access points you manage locally.
+  steps:
+    - Find out who holds the cloud account (often the ISP that installed it).
+    - If you can get access, update the firmware, switch the Wi-Fi to bridge/AP mode, and turn off SSH or password logins.
+    - Otherwise replace it with access points that have a local admin page, in AP/bridge mode, reusing the same Wi-Fi name and password.
+    - Keep the old unit for a week as a rollback, then return it.
+
+- id: close-internet-exposure
+  match: {kind: [config], title: "(?i)port forward .* is live|DMZ host|remote management is on"}
+  title: "Close the internet-facing hole on {device}"
+  who: you
+  effort_min: 5
+  why: >-
+    Something on your network is reachable from the whole internet. Bots scan every
+    address continuously; anything exposed gets probed within minutes.
+  steps:
+    - Open the gateway admin page and find the rule (port forwarding, DMZ or remote management).
+    - Turn it off, or restrict it to the one source address that needs it.
+    - Re-run the outside-in check to confirm nothing answers.
+
+- id: outside-open-port
+  match: {kind: [outside], title: "reachable from the internet"}
+  title: "Close the port that answers from the internet"
+  who: you
+  effort_min: 10
+  why: >-
+    An outside-in check from your own probe host connected to this port on your public
+    address. Unless you meant to publish it, close it at the gateway.
+  steps:
+    - Find which gateway rule forwards that port (port forwarding, DMZ, UPnP) and remove it.
+    - If you need remote access, use a VPN or Tailscale instead of an open port.
+    - Re-run the outside-in check.
+
+- id: dormant-forward
+  match: {kind: [config], title: "(?i)dormant port forward"}
+  title: "Delete the dormant port-forward rule on {device}"
+  who: you
+  effort_min: 2
+  why: >-
+    A port forward that's switched off is one accidental toggle away from exposing a LAN
+    service to the internet. If nothing needs it, delete it.
+  steps:
+    - Gateway admin page → Advanced → Port Forwarding.
+    - Delete the inactive rule.
+
+- id: gateway-firewall-level
+  match: {kind: [config], title: "(?i)firewall at minimum|ipv6 firewall is permissive"}
+  title: "Raise the firewall level on {device}"
+  who: you
+  effort_min: 3
+  why: >-
+    The gateway's firewall is at its most permissive setting. The typical/medium level
+    adds intrusion protection without affecting normal browsing, streaming or gaming.
+  steps:
+    - Gateway admin page → Firewall → set IPv4 (and IPv6) to Typical/Medium.
+    - Use the house normally for a day; if a game or app breaks, note which and adjust.
+
+- id: upnp-off
+  match: {kind: [config], title: "(?i)UPnP is enabled"}
+  title: "Turn off UPnP on {device}"
+  who: you
+  effort_min: 3
+  why: >-
+    UPnP lets any device on the LAN, including a compromised camera or set-top box, open
+    inbound ports on your gateway without asking.
+  steps:
+    - Gateway admin page → Advanced → Device Discovery / UPnP → off.
+    - If a game console complains about NAT type, forward its specific ports instead.
+
+- id: weak-wifi
+  match: {kind: [config], title: "(?i)weak security"}
+  title: "Switch {device} Wi-Fi to WPA2-AES or WPA3"
+  who: you
+  effort_min: 10
+  why: Old Wi-Fi security modes can be cracked from the street.
+  steps:
+    - Wi-Fi settings → security mode WPA2-AES (or WPA2/WPA3 transitional).
+    - Rejoin devices that drop off.
+
+- id: double-nat
+  match: {kind: [config], title: "(?i)double NAT"}
+  title: "Put {device} in bridge / access-point mode"
+  who: you
+  effort_min: 15
+  why: >-
+    This box runs its own private network behind your gateway. Devices on it are invisible
+    to the gateway and to HomeSentry, can't easily reach devices on the main network
+    (casting, AirPlay, printing), and pay a second NAT.
+  steps:
+    - In the device's admin page, switch the mode from Router/NAT to Bridge or Access Point.
+    - Rescan; its clients should now appear on the main network.
+
+- id: isp-gateway-firmware
+  match: {device_type: [gateway, modem], kind: [cve]}
+  title: "Ask your ISP about current firmware for {device}"
+  who: ISP
+  effort_min: 15
+  why: >-
+    Cable gateways get firmware from the ISP, not from you. You can't patch it yourself,
+    but you can ask whether yours is current and request a newer model if it isn't.
+  steps:
+    - Note the model and firmware version shown on the gateway's status page.
+    - Ask the ISP whether that's their current release for your model; request a replacement if the model is no longer updated.
+    - Keep remote management and UPnP off in the meantime.
+
+- id: eol-media-box
+  match: {kind: [eol], device_type: [set-top-box, streaming, tv, media]}
+  title: "Contain {device}: it will never be patched again"
+  who: you + provider
+  effort_min: 20
+  why: >-
+    It runs an operating system that stopped getting security fixes more than a decade
+    ago. You can't fix that; you can limit what it can reach and ask the provider for a
+    current-generation box.
+  steps:
+    - Don't sign into personal accounts (email, banking) on it.
+    - When you have an IoT/guest network, move it there so it can't reach your computers or NAS.
+    - Ask the provider whether a newer receiver model is available for your plan.
+
+- id: eol-generic
+  match: {kind: [eol]}
+  title: "Isolate or replace {device}"
+  who: you
+  effort_min: 30
+  why: >-
+    Its software is past end-of-life: every vulnerability found since stays open forever.
+  steps:
+    - Check the vendor's site for a newer firmware line; if none exists, plan a replacement.
+    - Until then, keep it off the internet and away from your computers (IoT/guest network).
+
+- id: nas-update
+  match: {device_type: [nas], kind: [cve]}
+  title: "Update the operating system on {device}"
+  who: you
+  effort_min: 20
+  why: >-
+    The NAS reports old versions of internet-facing software (SSH, web server, file
+    sharing). NAS vendors ship these fixes in their OS updates, and NAS boxes are a
+    favorite ransomware target.
+  steps:
+    - NAS admin page → Control Panel/Settings → system update → install the latest OS version.
+    - Turn on automatic security updates if offered.
+    - Turn off services you don't use (SSH, AFP, FTP), and never port-forward the NAS to the internet.
+    - Rescan with port scan to confirm the new versions.
+
+- id: nfs-restrict
+  match: {kind: [exposure], title: "(?i)NFS share|RPC portmapper"}
+  title: "Restrict or disable NFS on {device}"
+  who: you
+  effort_min: 10
+  why: >-
+    NFS trusts client addresses, not passwords: any device on the network, including an
+    infected one, may be able to mount the share.
+  steps:
+    - If nothing uses NFS, turn it off (and rpcbind with it).
+    - Otherwise limit each export to the specific client address that needs it, read-only where possible.
+
+- id: afp-off
+  match: {kind: [exposure], title: "(?i)AFP"}
+  title: "Turn off AFP file sharing on {device}"
+  who: you
+  effort_min: 5
+  why: >-
+    Apple Filing Protocol is deprecated; current macOS uses SMB, including for Time
+    Machine. Old file-sharing stacks are attack surface you don't need.
+  steps:
+    - NAS admin page → file services → disable AFP; keep SMB.
+    - Re-point any Mac (and Time Machine) at the SMB share.
+
+- id: smb1-off
+  match: {kind: [exposure], title: "(?i)NetBIOS|SMB1"}
+  title: "Disable SMB1/NetBIOS on {device}"
+  who: you
+  effort_min: 5
+  why: SMB1 was the WannaCry ransomware vector. Modern clients all speak SMB2/3.
+  steps:
+    - File-sharing settings → minimum SMB protocol = SMB2 (or SMB3); disable NetBIOS/WINS if offered.
+
+- id: telnet-off
+  match: {kind: [exposure], title: "(?i)telnet"}
+  title: "Disable Telnet on {device}"
+  who: you
+  effort_min: 10
+  why: Unencrypted remote login is the classic IoT botnet entry point.
+  steps:
+    - Turn Telnet off in the device's admin page; use SSH if remote login is needed at all.
+    - If it can't be disabled, isolate the device and look for a firmware update.
+
+- id: printer-lockdown
+  match: {device_type: [printer]}
+  title: "Lock down {device}"
+  who: you
+  effort_min: 10
+  why: >-
+    Network printers accept print and management commands from anyone on the LAN, and
+    their firmware is rarely updated.
+  steps:
+    - Open the printer's web page, set an admin password, and install any firmware update.
+    - Disable protocols nobody uses (raw port 9100, FTP, Telnet).
+
+- id: computers-updates
+  match: {device_type: [computer, phone, tablet], kind: [cve, exposure]}
+  group: household
+  title: "Keep your computers on current OS updates"
+  who: you
+  effort_min: 20
+  why: >-
+    Your computers report older versions of bundled software (like SSH). On computers the
+    fix is simply the OS vendor's updates; distro builds often carry the fixes already.
+  steps:
+    - "macOS: System Settings → General → Software Update (turn on automatic updates)."
+    - "Ubuntu/Debian: sudo apt update && sudo apt full-upgrade; keep unattended-upgrades on."
+    - "Windows: Settings → Windows Update."
+    - Turn off remote access (SSH, screen sharing) on machines where nobody uses it.
+
+- id: firmware-update
+  match: {kind: [cve]}
+  title: "Update the firmware on {device}"
+  who: you
+  effort_min: 20
+  why: >-
+    The device reports a software version with published vulnerabilities. Firmware from
+    the vendor is the fix; if the vendor stopped shipping updates, plan a replacement.
+  steps:
+    - Check the device's admin page or app for a firmware update, and the vendor's support page for the latest version.
+    - Turn on automatic updates if offered.
+    - If no update exists, isolate it on an IoT/guest network or replace it.
+
+- id: exposure-generic
+  match: {kind: [exposure]}
+  title: "Review the open service on {device}"
+  who: you
+  effort_min: 10
+  why: A service is reachable on your network that may not need to be.
+  steps:
+    - If you don't use it, turn it off in the device's settings.
+    - If you do, make sure it requires a strong password.

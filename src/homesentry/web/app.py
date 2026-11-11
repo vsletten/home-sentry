@@ -1,45 +1,34 @@
-"""Phone-friendly web UI: inventory grid + per-device wizard with camera upload."""
+"""Phone-friendly web UI: overview, plan, map, timeline, ask, report, device wizard."""
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import data_dir, wizard
+from .. import __version__, agent, data_dir, netmap, plan, wizard
 from ..llm import LLM, OllamaClient, parse_json_reply
 from ..scan import run_scan
 from ..store import Store
+from ..watch import ScanBusy, finding_key
+from . import ui
 
-HERE = Path(__file__).parent
-ICONS = {
-    "router": "📡",
-    "modem": "📶",
-    "gateway": "📡",
-    "set-top-box": "📺",
-    "streaming": "📺",
-    "tv": "🖥️",
-    "media": "🎞️",
-    "nas": "🗄️",
-    "camera": "📷",
-    "smart-home": "🏠",
-    "speaker": "🔊",
-    "printer": "🖨️",
-    "computer": "💻",
-    "phone": "📱",
-    "tablet": "📱",
-    "appliance": "🧊",
-    "network": "🔀",
-    "apple": "🍎",
-    "game-console": "🎮",
-}
+SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+GOOD = {"finding_resolved", "firmware_changed", "port_closed", "device_online"}
+SUGGESTIONS = [
+    "What should I fix first, and why?",
+    "Which device worries you most?",
+    "What changed this week?",
+    "Is anything reachable from the internet?",
+]
 
 
 def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
@@ -47,12 +36,45 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
     app.state.store = store or Store(data_dir() / "inventory.db")
     app.state.llm = llm or OllamaClient()
     app.state.scan = {"running": False, "log": [], "error": None}
-    tpl = Jinja2Templates(directory=HERE / "templates")
-    tpl.env.globals.update(icon=lambda t: ICONS.get(t or "", "❔"), ago=_ago)
+    tpl = Jinja2Templates(env=ui.env())
 
     def S() -> Store:
         return app.state.store
 
+    def names() -> dict[int, str]:
+        return agent.names_for(S())
+
+    def guides_available() -> set[str]:
+        gdir = data_dir() / "guides"
+        return {p.stem for p in gdir.glob("*.html")} if gdir.is_dir() else set()
+
+    def rendered_plan() -> dict[str, Any]:
+        p = plan.build(S())
+        n = names()
+        for a in p["actions"]:
+            a["rendered"] = plan.render_title(a, lambda i: n.get(i, "device"))
+        return p
+
+    def background(job) -> None:
+        st = app.state.scan
+        if st["running"]:
+            return
+        st.update(running=True, log=[], error=None)
+
+        def work():
+            try:
+                job(st["log"].append)
+            except ScanBusy:
+                st["error"] = "the automatic scan is running right now; try again in a minute"
+            except Exception as e:  # noqa: BLE001
+                st["error"] = f"{e}"
+                traceback.print_exc()
+            finally:
+                st["running"] = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- overview ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         devices = S().devices()
@@ -60,7 +82,6 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         by_dev: dict[int, list] = {}
         for f in findings:
             by_dev.setdefault(f["device_id"], []).append(f)
-        names = {d["id"]: d["label"] or d["ip"] or "device" for d in devices}
         for d in devices:
             fs = by_dev.get(d["id"], [])
             d["worst"] = fs[0]["severity"] if fs else None
@@ -68,17 +89,14 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         networks: dict[str, list] = {}
         for d in sorted(devices, key=lambda d: (SEV_RANK.get(d["worst"], 9), d["id"])):
             networks.setdefault(d.get("network") or "added by hand", []).append(d)
-        top = [
-            dict(f, device=names.get(f["device_id"]))
-            for f in findings
-            if f["severity"] in ("critical", "high", "medium")
-        ][:8]
+        p = rendered_plan()
         stats = {
             "total": len(devices),
+            "online": sum(1 for d in devices if d.get("online")),
             "confirmed": sum(d["confirmed"] for d in devices),
-            "unknown": sum(1 for d in devices if (d["confidence"] or 0) < 0.4),
-            "risks": sum(1 for f in findings if f["severity"] in ("critical", "high")),
+            "unknown": len(p["unknown"]),
         }
+        trend = [s["summary"]["score"] for s in S().scans(40) if "score" in s["summary"]]
         return tpl.TemplateResponse(
             request,
             "index.html",
@@ -87,66 +105,158 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
                 "stats": stats,
                 "scan": app.state.scan,
                 "last_scan": S().last_scan(),
-                "top": top,
+                "plan": p,
+                "trend": trend,
+                "events": S().events(limit=5),
+                "names": names(),
             },
         )
 
     @app.post("/scan")
     def scan(ports: Annotated[bool, Form()] = False):
-        st = app.state.scan
-        if not st["running"]:
-            st.update(running=True, log=[], error=None)
-
-            def work():
-                try:
-                    run_scan(S(), ports=ports, log=st["log"].append)
-                except Exception as e:  # noqa: BLE001
-                    st["error"] = f"{e}"
-                    traceback.print_exc()
-                finally:
-                    st["running"] = False
-
-            threading.Thread(target=work, daemon=True).start()
+        background(lambda log: run_scan(S(), ports=ports, log=log, extra={"trigger": "button"}))
         return RedirectResponse("/", status_code=303)
 
     @app.post("/threats")
     def threats():
-        st = app.state.scan
-        if not st["running"]:
-            st.update(running=True, log=[], error=None)
+        def job(log):
+            from .. import threat
 
-            def work():
-                from .. import threat
+            threat.run(S(), log=log)
 
-                try:
-                    threat.run(S(), log=st["log"].append)
-                except Exception as e:  # noqa: BLE001
-                    st["error"] = f"{e}"
-                finally:
-                    st["running"] = False
-
-            threading.Thread(target=work, daemon=True).start()
+        background(job)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/outside")
     def outside_check():
-        st = app.state.scan
-        if not st["running"]:
-            st.update(running=True, log=[], error=None)
+        def job(log):
+            from .. import outside
 
-            def work():
-                from .. import outside
+            outside.run_and_record(S(), log=log)
 
-                try:
-                    outside.run_and_record(S(), log=st["log"].append)
-                except Exception as e:  # noqa: BLE001
-                    st["error"] = f"{e}"
-                finally:
-                    st["running"] = False
-
-            threading.Thread(target=work, daemon=True).start()
+        background(job)
         return RedirectResponse("/", status_code=303)
 
+    # ---- plan ---------------------------------------------------------------------
+    @app.get("/plan", response_class=HTMLResponse)
+    def plan_page(request: Request):
+        p = rendered_plan()
+        acc = S().accepted()
+        accepted = []
+        for f in p["accepted"]:
+            a = acc.get((f["device_id"], f["fkey"])) or {}
+            accepted.append(f | {"note": a.get("note", ""), "accepted_at": a.get("ts")})
+        return tpl.TemplateResponse(
+            request,
+            "plan.html",
+            {
+                "plan": p,
+                "accepted": accepted,
+                "names": names(),
+                "devs": {d["id"]: d for d in S().devices(include_retired=True)},
+                "guides": guides_available(),
+            },
+        )
+
+    @app.post("/plan/accept")
+    def plan_accept(key: Annotated[str, Form()], note: Annotated[str, Form()] = ""):
+        a = next((a for a in plan.build(S())["actions"] if a["key"] == key), None)
+        if a is None:
+            raise HTTPException(404)
+        for f in a["findings"]:
+            S().accept_risk(f["device_id"], f["fkey"], note)
+        return RedirectResponse("/plan", status_code=303)
+
+    @app.post("/plan/unaccept")
+    def plan_unaccept(device_id: Annotated[int, Form()], fkey: Annotated[str, Form()]):
+        S().unaccept_risk(device_id, fkey)
+        return RedirectResponse("/plan", status_code=303)
+
+    # ---- map / timeline / report ------------------------------------------------------
+    @app.get("/map", response_class=HTMLResponse)
+    def map_page(request: Request):
+        m = netmap.model(S(), ui.icon)
+        lanes = {n["lane"] for n in m["nodes"]} or {"x"}
+        return tpl.TemplateResponse(
+            request,
+            "map.html",
+            {"svg": netmap.svg(m), "min_w": min(880, 212 * len(lanes) + 24)},
+        )
+
+    @app.get("/timeline", response_class=HTMLResponse)
+    def timeline(request: Request, only: str | None = None):
+        evs = S().events(limit=400)
+        if only == "important":
+            evs = [e for e in evs if e["severity"] in ("critical", "high", "medium")]
+        elif only == "good":
+            evs = [e for e in evs if e["kind"] in GOOD]
+        days: list[tuple[str, list]] = []
+        for e in evs:
+            day = dt.datetime.fromtimestamp(e["ts"]).strftime("%A %d %B")
+            if not days or days[-1][0] != day:
+                days.append((day, []))
+            days[-1][1].append(e)
+        return tpl.TemplateResponse(
+            request,
+            "timeline.html",
+            {"days": days, "names": names(), "only": only, "watch": _watch_cadence()},
+        )
+
+    @app.get("/report", response_class=HTMLResponse)
+    def report_page():
+        from .. import report
+
+        return HTMLResponse(report.render(S()))
+
+    # ---- ask ------------------------------------------------------------------------
+    @app.get("/ask", response_class=HTMLResponse)
+    def ask_page(request: Request, q: str | None = None, error: str | None = None):
+        n = names()
+        turns = []
+        for t in S().ask_turns(limit=40):
+            if t["role"] == "user":
+                shown = re.sub(
+                    r"\[D(\d+)\]", lambda m: n.get(int(m.group(1)), m.group(0)), t["content"]
+                )
+                turns.append({"role": "user", "shown": shown})
+            else:
+                try:
+                    body = parse_json_reply(t["content"])
+                except ValueError:
+                    body = {"answer": t["content"]}
+                turns.append({"role": "assistant", "html": agent.render(body.get("answer", ""), n)})
+        last = S().ask_turns(limit=1)
+        sugg = SUGGESTIONS
+        if last and last[-1]["role"] == "assistant":
+            try:
+                sugg = parse_json_reply(last[-1]["content"]).get("followups") or SUGGESTIONS
+            except ValueError:
+                pass
+        sugg = [
+            re.sub(r"\[D(\d+)\]", lambda m: n.get(int(m.group(1)), "that device"), s) for s in sugg
+        ]
+        return tpl.TemplateResponse(
+            request,
+            "ask.html",
+            {"turns": turns, "prefill": q, "suggestions": sugg[:4], "error": error},
+        )
+
+    @app.post("/ask")
+    def ask_post(q: Annotated[str, Form()]):
+        if not q.strip():
+            return RedirectResponse("/ask", status_code=303)
+        try:
+            agent.ask(S(), app.state.llm, q)
+        except Exception as e:  # noqa: BLE001
+            return RedirectResponse(f"/ask?error={str(e)[:160]}#bottom", status_code=303)
+        return RedirectResponse("/ask#bottom", status_code=303)
+
+    @app.post("/ask/clear")
+    def ask_clear():
+        S().clear_ask()
+        return RedirectResponse("/ask", status_code=303)
+
+    # ---- devices --------------------------------------------------------------------
     @app.post("/devices/new")
     def new_device(label: Annotated[str, Form()]):
         did = S().create_manual(label.strip() or "Unnamed device")
@@ -165,6 +275,18 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
                 except ValueError:
                     t["parsed"] = {"message": t["content"]}
             t["photo_names"] = [Path(p).name for p in t["images"]]
+        acc = S().accepted()
+        findings = []
+        for f in S().findings(device_id):
+            k = finding_key(f)
+            findings.append(
+                f
+                | {
+                    "fkey": k,
+                    "accepted": acc.get((device_id, k)),
+                    "explain": agent.explain_prompt(device_id, f["title"]),
+                }
+            )
         return tpl.TemplateResponse(
             request,
             "device.html",
@@ -172,11 +294,25 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
                 "d": d,
                 "evidence": S().evidence(device_id),
                 "turns": turns,
-                "findings": S().findings(device_id),
+                "findings": findings,
                 "proposal": wizard.latest_proposal(S(), device_id),
                 "error": error,
+                "events": S().events(limit=12, device_id=device_id),
+                "names": names(),
             },
         )
+
+    @app.post("/device/{device_id}/accept")
+    def device_accept(
+        device_id: int, fkey: Annotated[str, Form()], note: Annotated[str, Form()] = ""
+    ):
+        S().accept_risk(device_id, fkey, note)
+        return RedirectResponse(f"/device/{device_id}", status_code=303)
+
+    @app.post("/device/{device_id}/unaccept")
+    def device_unaccept(device_id: int, fkey: Annotated[str, Form()]):
+        S().unaccept_risk(device_id, fkey)
+        return RedirectResponse(f"/device/{device_id}", status_code=303)
 
     @app.post("/device/{device_id}/wizard")
     async def wizard_turn(
@@ -233,17 +369,10 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         S().retire(device_id)
         return RedirectResponse("/", status_code=303)
 
+    # ---- guides / photos / health -------------------------------------------------------
     @app.get("/guides", response_class=HTMLResponse)
-    def guides():
-        gdir = data_dir() / "guides"
-        names = sorted(p.stem for p in gdir.glob("*.html")) if gdir.is_dir() else []
-        items = (
-            "".join(f'<li><a href="/guides/{n}">{n}</a></li>' for n in names) or "<li>none yet</li>"
-        )
-        return HTMLResponse(
-            f"<!doctype html><meta name=viewport content='width=device-width'>"
-            f"<title>Guides</title><h1>Guides</h1><ul>{items}</ul><p><a href='/'>back</a>"
-        )
+    def guides(request: Request):
+        return tpl.TemplateResponse(request, "guides.html", {"guides": sorted(guides_available())})
 
     @app.get("/guides/{slug}")
     def guide(slug: str):
@@ -264,17 +393,31 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
             raise HTTPException(404)
         return FileResponse(p)
 
+    @app.get("/healthz")
+    def healthz():
+        last = S().last_scan()
+        age = round(time.time() - last["finished"]) if last else None
+        sc = plan.score(S())
+        ok = age is not None and age < 6 * 3600
+        return JSONResponse(
+            {
+                "ok": ok,
+                "version": __version__,
+                "last_scan_age_s": age,
+                "devices": len(S().devices()),
+                "score": sc["score"],
+                "grade": sc["grade"],
+            },
+            status_code=200 if ok else 503,
+        )
+
     return app
 
 
-SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-
-
-def _ago(ts: float | None) -> str:
-    if not ts:
-        return "never"
-    s = int(time.time() - ts)
-    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
-        if s >= n:
-            return f"{s // n}{unit} ago"
-    return "just now"
+def _watch_cadence() -> str | None:
+    """Human cadence of the watch timer if installed (read from the unit file)."""
+    unit = Path("~/.config/systemd/user/homesentry-watch.timer").expanduser()
+    if not unit.exists():
+        return None
+    m = re.search(r"OnUnitActiveSec=(\S+)", unit.read_text())
+    return m.group(1) if m else "on a timer"
