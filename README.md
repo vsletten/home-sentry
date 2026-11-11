@@ -120,6 +120,11 @@ loginctl enable-linger "$USER"     # keep running without a login session
 homesentry doctor
 ```
 
+Use the **distro nmap** (`apt install nmap`), not the snap: the units are sandboxed
+(`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`) and snap's launcher refuses to run
+under any of them, so every port scan would fail (safely: old port evidence is kept).
+`homesentry doctor` flags it.
+
 The UI binds `$HOMESENTRY_BIND` (loopback if unset, never all interfaces) and has no login:
 put it on an address only you can reach, like a tailnet IP. `/healthz` returns 503 when the
 last scan is older than 6h, for whatever watches your watchers.

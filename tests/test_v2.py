@@ -439,6 +439,25 @@ def test_tests_can_never_reach_the_owners_real_secrets():
 
 
 # ---- doctor ---------------------------------------------------------------------------------
+def test_doctor_flags_snap_nmap(home, monkeypatch):
+    import shutil as sh
+
+    real = sh.which
+    monkeypatch.setattr(
+        doctor.shutil, "which", lambda t: "/snap/bin/nmap" if t == "nmap" else real(t)
+    )
+    monkeypatch.setattr(doctor.os.path, "realpath", lambda p: p)
+
+    class P:
+        stdout = "active\n"
+
+    rows = {
+        r["check"]: r
+        for r in doctor.checks(Store(home / "inventory.db"), runner=lambda *a, **k: P())
+    }
+    assert rows["tool nmap"]["status"] == "fail" and "apt install nmap" in rows["tool nmap"]["msg"]
+
+
 def test_doctor_reports_and_fixes_data_dir_mode(home):
     os.chmod(home, 0o755)
     st = Store(home / "inventory.db")

@@ -11,6 +11,7 @@ Privacy design (the same line as the wizard, applied to the whole house):
 
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import html
 import json
@@ -157,6 +158,49 @@ def localize_question(store: Store, q: str) -> str:
     return scrub(out)
 
 
+def _unwrap(v: Any) -> Any:
+    """Undo a model double-encoding a value: '"text"' -> 'text', "['a', 'b']" -> [...]."""
+    for _ in range(2):
+        if not isinstance(v, str):
+            return v
+        s = v.strip()
+        if not (s[:1] in '"[{' and s[-1:] in '"]}') or len(s) < 2:
+            return v
+        try:
+            v = json.loads(s)
+        except ValueError:
+            try:
+                v = ast.literal_eval(s)  # literals only: never evaluates code
+            except (ValueError, SyntaxError):
+                return v
+    return v
+
+
+def normalize_reply(reply: Any) -> dict[str, Any]:
+    """Tolerate the shapes real models return: double-encoded strings, stringified lists,
+    {"answer": {"text": ...}}, or the reply under a different key."""
+    reply = _unwrap(reply)
+    if isinstance(reply, str):
+        reply = {"answer": reply}
+    if not isinstance(reply, dict):
+        reply = {}
+    ans = _unwrap(reply.get("answer"))
+    if isinstance(ans, dict):
+        ans = ans.get("text") or ans.get("answer") or ans.get("content")
+    if isinstance(ans, list):
+        ans = "\n\n".join(map(str, ans))
+    if not (isinstance(ans, str) and ans.strip()):
+        others = [v for k, v in reply.items() if k != "followups" and isinstance(v, str)]
+        ans = max(others, key=len, default="")
+    ans = str(ans).strip().replace("\\n", "\n")
+    fups = _unwrap(reply.get("followups"))
+    if isinstance(fups, str):
+        fups = [fups] if fups.strip() else []
+    if not isinstance(fups, list):
+        fups = []
+    return {"answer": ans, "followups": [str(x).strip() for x in fups if str(x).strip()][:3]}
+
+
 def ask(store: Store, llm: LLM, question: str) -> dict[str, Any]:
     q = localize_question(store, question.strip())[:2000]
     history = store.ask_turns(limit=8)
@@ -169,11 +213,10 @@ def ask(store: Store, llm: LLM, question: str) -> dict[str, Any]:
     for t in history:
         messages.append({"role": t["role"], "content": t["content"]})
     messages.append({"role": "user", "content": q})
-    reply = llm.chat_json(messages)
-    answer = {
-        "answer": str(reply.get("answer") or "").strip() or "(no answer)",
-        "followups": [str(x) for x in (reply.get("followups") or [])][:3],
-    }
+    answer = normalize_reply(llm.chat_json(messages))
+    if not answer["answer"]:  # models occasionally return an empty body: one retry
+        answer = normalize_reply(llm.chat_json(messages))
+    answer["answer"] = answer["answer"] or "(no answer: try rephrasing)"
     store.add_ask("assistant", json.dumps(answer))
     return answer
 
