@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %} · {{ d.label or d.ip }}{% endblock %}
+{% block body %}
+<style>
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:14px}
+@media (max-width:800px){.cols{grid-template-columns:1fr}}
+h1{font-size:22px;margin:4px 0 2px}.big{font-size:44px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}td{padding:4px 6px;border-top:1px solid var(--line);vertical-align:top;word-break:break-word}
+td:first-child{color:var(--mute);white-space:nowrap}
+.chat{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto;padding:4px}
+.msg{padding:10px 12px;border-radius:12px;max-width:92%}
+.msg.user{align-self:flex-end;background:var(--acc);color:#fff;white-space:pre-wrap}
+.msg.assistant{align-self:flex-start;background:var(--chip)}
+.msg img{max-width:160px;border-radius:8px;display:block;margin-top:6px}
+.ask{margin-top:6px;font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.drop{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cam{display:inline-flex;gap:6px;align-items:center}
+.cam input{display:none}
+</style>
+<p><a class="mute small" href="/">← all devices</a></p>
+<div class="cols">
+  <section class="card">
+    <div style="display:flex;gap:12px;align-items:center">
+      <span class="big">{{ icon(d.device_type) }}</span>
+      <div><h1>{{ d.label or d.model or d.ip or "Unknown device" }}</h1>
+      <div class="mute">{{ d.make or "?" }} · {{ d.model or "model ?" }}{% if d.firmware %} · fw {{ d.firmware }}{% endif %}</div>
+      <div class="small mute">{{ d.ip or "not seen on network" }} · {{ d.oui_vendor or "unknown NIC vendor" }} · seen {{ ago(d.last_seen) }}</div></div>
+    </div>
+    <div style="margin:12px 0 4px" class="small">Confidence {{ ((d.confidence or 0)*100)|int }}% · via {{ d.id_source or "–" }}
+      {% if d.confirmed %}<span class="chip ok">confirmed</span>{% endif %}</div>
+    <div class="meter"><i style="width:{{ ((d.confidence or 0)*100)|int }}%"></i></div>
+
+    <h3 style="margin:18px 0 6px;font-size:14px">Lock it in</h3>
+    {% set p = (proposal or {}).get("identity") or {} %}
+    <form method="post" action="/device/{{ d.id }}/confirm" class="grid2">
+      <input type="text" name="label" placeholder="Name (e.g. Living room DVR)" value="{{ d.label or '' }}">
+      <input type="text" name="device_type" placeholder="type" value="{{ p.device_type or d.device_type or '' }}">
+      <input type="text" name="make" placeholder="make" value="{{ p.make or d.make or '' }}">
+      <input type="text" name="model" placeholder="model" value="{{ p.model or d.model or '' }}">
+      <input type="text" name="firmware" placeholder="firmware" value="{{ p.firmware or d.firmware or '' }}">
+      <input type="text" name="notes" placeholder="notes / location" value="{{ d.notes or '' }}">
+      <button class="btn primary" style="grid-column:1/-1">✓ Confirm identity (teaches the KB)</button>
+    </form>
+
+    <details style="margin-top:16px" {% if not turns %}open{% endif %}>
+      <summary class="small mute">Network evidence ({{ evidence|length }})</summary>
+      <table>{% for e in evidence %}<tr><td>{{ e.source }}.{{ e.key }}</td><td>{{ e.value }}</td></tr>{% endfor %}</table>
+    </details>
+  </section>
+
+  <section class="card">
+    <h3 style="margin:0 0 8px;font-size:15px">🧭 Identify with the wizard</h3>
+    {% if error %}<p class="chip bad">{{ error }}</p>{% endif %}
+    <div class="chat">
+      {% if not turns %}<div class="msg assistant">Tell me what you know about this thing, or snap the
+        label on the back/bottom. Model number and FCC ID are gold. A photo of its <i>Settings → About</i>
+        screen gets me the firmware.</div>{% endif %}
+      {% for t in turns %}
+        {% if t.role == "user" %}
+          <div class="msg user">{{ t.content }}{% for n in t.photo_names %}<img src="/photo/{{ d.id }}/{{ n }}" alt="photo">{% endfor %}</div>
+        {% else %}
+          <div class="msg assistant">{{ t.parsed.message }}
+            {% set i = t.parsed.identity or {} %}
+            {% if i.make or i.model %}<div class="small mute">→ {{ i.device_type or "?" }} · {{ i.make or "?" }} {{ i.model or "" }}{% if i.firmware %} · fw {{ i.firmware }}{% endif %} · {{ ((t.parsed.confidence or 0)*100)|int }}%</div>{% endif %}
+            {% if t.parsed.next and t.parsed.next.kind != "none" and loop.last %}<div class="ask">{{ "📸 " if t.parsed.next.kind == "photo" else "❓ " }}{{ t.parsed.next.ask }}</div>{% endif %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      <span id="bottom"></span>
+    </div>
+    <form method="post" action="/device/{{ d.id }}/wizard" enctype="multipart/form-data" style="margin-top:12px"
+          onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Thinking…'">
+      <textarea name="text" rows="2" placeholder="e.g. it's the black box under the living-room TV"></textarea>
+      <div class="drop" style="margin-top:8px">
+        <label class="btn cam">📷 Take photo<input type="file" name="photos" accept="image/*" capture="environment"
+          onchange="document.getElementById('pc').textContent=this.files.length+' photo(s) ready'"></label>
+        <label class="btn cam">🖼️ Choose…<input type="file" name="photos" accept="image/*" multiple
+          onchange="document.getElementById('pc').textContent=this.files.length+' photo(s) ready'"></label>
+        <span id="pc" class="small mute"></span>
+        <button type="submit" class="btn primary" style="margin-left:auto">Send</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

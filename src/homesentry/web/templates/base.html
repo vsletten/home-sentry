@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HomeSentry{% block title %}{% endblock %}</title>
+<style>
+:root{--bg:#f5f4ef;--card:#fff;--ink:#1d1f24;--mute:#6b6f78;--line:#e3e1d9;--acc:#2f6fed;
+--ok:#1f9d55;--warn:#d98e04;--bad:#d64545;--chip:#efeee8}
+@media (prefers-color-scheme:dark){:root{--bg:#121417;--card:#1b1e23;--ink:#e8e9ec;--mute:#9298a2;
+--line:#2a2e35;--chip:#252930}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;
+background:var(--bg);color:var(--ink)}a{color:inherit;text-decoration:none}
+header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);
+position:sticky;top:0;background:var(--bg);z-index:2}
+header .logo{font-weight:800;letter-spacing:.3px}header .logo span{color:var(--acc)}
+main{max-width:1100px;margin:0 auto;padding:18px}
+.btn{display:inline-block;border:1px solid var(--line);background:var(--card);color:var(--ink);
+padding:8px 14px;border-radius:10px;font:inherit;cursor:pointer}
+.btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn:disabled{opacity:.6;cursor:wait}
+.chip{display:inline-block;background:var(--chip);border-radius:999px;padding:2px 9px;font-size:12px;color:var(--mute)}
+.chip.ok{background:#1f9d5522;color:var(--ok)}.chip.warn{background:#d98e0422;color:var(--warn)}
+.chip.bad{background:#d6454522;color:var(--bad)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.mute{color:var(--mute)}.small{font-size:12.5px}
+.meter{height:6px;background:var(--chip);border-radius:9px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--acc)}
+input[type=text],textarea,select{width:100%;font:inherit;padding:9px 11px;border-radius:10px;
+border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+</style>
+</head>
+<body>
+<header><a class="logo" href="/">🛡️ Home<span>Sentry</span></a><span class="chip">v0 · local-only</span></header>
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>
