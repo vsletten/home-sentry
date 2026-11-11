@@ -38,6 +38,16 @@ def checks(store: Store, runner=subprocess.run) -> list[dict[str, Any]]:
         ("ssh", "outside-in probe"),
     ):
         p = shutil.which(tool)
+        if tool == "nmap" and p and os.path.realpath(p).startswith("/snap/"):
+            # snap-confine refuses to run under NoNewPrivileges/ProtectSystem/PrivateTmp,
+            # so a snap nmap silently fails every port scan inside the hardened units.
+            add(
+                "tool nmap",
+                FAIL,
+                f"{p} is a snap: it can't run in the sandboxed units; "
+                "install the distro package (apt install nmap)",
+            )
+            continue
         add(f"tool {tool}", OK if p else (FAIL if tool == "ip" else WARN), p or f"missing ({why})")
     for name, need in (
         ("env", "OLLAMA_API_KEY for the wizard/Ask"),
