@@ -138,6 +138,18 @@ Env: `OLLAMA_API_KEY`; `HOMESENTRY_MODEL` (reasoning, default `glm-5.3`, needs n
 Photo turns run in two stages: the vision model transcribes the photo (serials masked), then
 the reasoning model works from the transcript. The transcript stays in the chat history.
 
+
+### Host firewall
+
+With a stateful host firewall in front of the scanner, two discovery replies need explicit rules,
+because devices answer multicast probes by unicast from addresses the firewall never saw a packet go to:
+
+- **SSDP/UPnP:** HomeSentry sends its M-SEARCH from fixed UDP port **1901** (`HOMESENTRY_SSDP_PORT`
+  overrides; `0` means an ephemeral port). Allow it: `ufw allow in on <lan-if> proto udp from <lan-cidr> to any port 1901`.
+- **mDNS:** allow `5353/udp` in from the LAN, and replies *from* port 5353.
+
+Port scans use `nmap -sT` (full connects), which conntrack tracks, so they need no rule.
+
 ## Tests
 
 ```bash

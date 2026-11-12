@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import shutil
 import socket
@@ -281,9 +282,44 @@ UPNP_FIELDS = (
 )  # serialNumber/UDN deliberately not collected
 
 
+# SSDP devices answer an M-SEARCH by unicast UDP *from a random port* back to the port the
+# search came from. A stateful host firewall cannot match those replies to the multicast search,
+# so they are dropped unless the search leaves from a fixed port the firewall can allow
+# (ufw: `allow in on <lan-if> proto udp from <lan-cidr> to any port 1901`).
+SSDP_REPLY_PORT_DEFAULT = 1901
+
+
+def ssdp_reply_port() -> int:
+    """The fixed source port for M-SEARCH; HOMESENTRY_SSDP_PORT overrides, 0 means ephemeral."""
+    raw = os.environ.get("HOMESENTRY_SSDP_PORT", "").strip()
+    if not raw:
+        return SSDP_REPLY_PORT_DEFAULT
+    port = int(raw)
+    if not 0 <= port <= 65535:
+        raise ValueError(f"HOMESENTRY_SSDP_PORT out of range: {raw}")
+    return port
+
+
+def _bind_reply_port(s: socket.socket, port: int) -> int:
+    """Bind the search socket to the fixed reply port; fall back to an ephemeral one if taken."""
+    if port:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("", port))
+            return port
+        except OSError as exc:
+            print(
+                f"  SSDP: reply port {port} unavailable ({exc}); using an ephemeral port, "
+                "which a host firewall may block"
+            )
+    s.bind(("", 0))
+    return s.getsockname()[1]
+
+
 def ssdp(seconds: float = 4.0, local_ip: str | None = None) -> dict[str, list[Sighting]]:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(0.5)
+    _bind_reply_port(s, ssdp_reply_port())
     if local_ip:  # send the M-SEARCH out of a specific LAN leg
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip))
     s.sendto(SSDP_MSG, ("239.255.255.250", 1900))
