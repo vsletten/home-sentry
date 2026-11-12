@@ -144,8 +144,10 @@ the reasoning model works from the transcript. The transcript stays in the chat 
 With a stateful host firewall in front of the scanner, two discovery replies need explicit rules,
 because devices answer multicast probes by unicast from addresses the firewall never saw a packet go to:
 
-- **SSDP/UPnP:** HomeSentry sends its M-SEARCH from fixed UDP port **1901** (`HOMESENTRY_SSDP_PORT`
-  overrides; `0` means an ephemeral port). Allow it: `ufw allow in on <lan-if> proto udp from <lan-cidr> to any port 1901`.
+- **SSDP/UPnP:** HomeSentry sends its M-SEARCH from a fixed UDP port, **1901** unless
+  `HOMESENTRY_SSDP_PORT` sets another (`0` means ephemeral, which a firewall can't admit). Allow the
+  port you use: `ufw allow in on <lan-if> proto udp from <lan-cidr> to any port <port>`.
+  Device-description fetches only follow a `LOCATION` on the responding device's own private IP.
 - **mDNS:** allow `5353/udp` in from the LAN, and replies *from* port 5353.
 
 Port scans use `nmap -sT` (full connects), which conntrack tracks, so they need no rule.

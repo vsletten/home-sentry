@@ -290,20 +290,33 @@ SSDP_REPLY_PORT_DEFAULT = 1901
 
 
 def ssdp_reply_port() -> int:
-    """The fixed source port for M-SEARCH; HOMESENTRY_SSDP_PORT overrides, 0 means ephemeral."""
+    """The fixed source port for M-SEARCH; HOMESENTRY_SSDP_PORT overrides, 0 means ephemeral.
+
+    A bad value never aborts a scan: it is reported and the default is used.
+    """
     raw = os.environ.get("HOMESENTRY_SSDP_PORT", "").strip()
     if not raw:
         return SSDP_REPLY_PORT_DEFAULT
-    port = int(raw)
+    try:
+        port = int(raw)
+    except ValueError:
+        port = -1
     if not 0 <= port <= 65535:
-        raise ValueError(f"HOMESENTRY_SSDP_PORT out of range: {raw}")
+        print(
+            f"  SSDP: ignoring invalid HOMESENTRY_SSDP_PORT={raw!r}; "
+            f"using {SSDP_REPLY_PORT_DEFAULT}"
+        )
+        return SSDP_REPLY_PORT_DEFAULT
     return port
 
 
 def _bind_reply_port(s: socket.socket, port: int) -> int:
-    """Bind the search socket to the fixed reply port; fall back to an ephemeral one if taken."""
+    """Bind the search socket to the fixed reply port; fall back to an ephemeral one if taken.
+
+    No SO_REUSEADDR: on Linux it would let this socket share a port another socket already
+    holds, and unicast replies then reach only one of them. An occupied port must fail here.
+    """
     if port:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("", port))
             return port
@@ -314,6 +327,23 @@ def _bind_reply_port(s: socket.socket, port: int) -> int:
             )
     s.bind(("", 0))
     return s.getsockname()[1]
+
+
+def safe_ssdp_location(responder: str, location: str) -> bool:
+    """Only fetch a device description from the device that answered, on a private LAN address.
+
+    SSDP replies are unauthenticated UDP: anyone on the LAN can send one. Following an arbitrary
+    LOCATION would let them make this scanner request localhost or other internal services.
+    """
+    try:
+        url = httpx.URL(location)
+        host = ipaddress.ip_address(url.host)
+        sender = ipaddress.ip_address(responder)
+    except (ValueError, httpx.InvalidURL):
+        return False
+    if url.scheme not in ("http", "https") or host != sender:
+        return False
+    return host.is_private and not (host.is_loopback or host.is_link_local or host.is_unspecified)
 
 
 def ssdp(seconds: float = 4.0, local_ip: str | None = None) -> dict[str, list[Sighting]]:
@@ -344,9 +374,11 @@ def ssdp(seconds: float = 4.0, local_ip: str | None = None) -> dict[str, list[Si
     res: dict[str, set[Sighting]] = {}
     for ip, srv in servers.items():
         res.setdefault(ip, set()).update(("ssdp", "server", v) for v in srv)
-    with httpx.Client(timeout=4) as client:
+    with httpx.Client(timeout=4, follow_redirects=False) as client:
         for ip, locs in locations.items():
             for loc in sorted(locs)[:6]:
+                if not safe_ssdp_location(ip, loc):
+                    continue
                 try:
                     xml = client.get(loc).text
                 except httpx.HTTPError:
