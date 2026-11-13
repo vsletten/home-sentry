@@ -202,7 +202,7 @@ def seed(st: Store) -> dict[str, int]:
     ids = {}
     for name, ip, dtype, make in (
         ("Gateway", GW, "gateway", "Technicolor"),
-        ("NAS", NAS, "nas", "TerraMaster"),
+        ("NAS", NAS, "nas", "AcmeNAS"),  # generic brand: TerraMaster has its own playbook
         ("Wi-Fi", "10.99.0.49", "router", "Arista (Mojo Networks)"),
         ("Laptop", PC, "computer", "Apple"),
         ("Laptop 2", "10.99.0.31", "computer", "Apple"),
@@ -261,6 +261,16 @@ def test_plan_maps_findings_to_playbooks_and_ranks(home):
     assert by_pb["dormant-forward"]["quick_win"]
     t = plan.render_title(by_pb["nas-update"], {ids["NAS"]: "NAS"}.get)
     assert t == "Update the operating system on NAS"
+
+
+def test_terramaster_gets_one_migration_project_with_guide(home):
+    st = Store(home / "inventory.db")
+    ids = seed(st)
+    st.set_identity(ids["NAS"], {"make": "TerraMaster", "model": "F4-423"}, "user", 1.0, True)
+    acts = [a for a in plan.build(st)["actions"] if ids["NAS"] in a["device_ids"]]
+    assert [a["playbook"] for a in acts] == ["terramaster-to-omv"]
+    assert len(acts[0]["findings"]) == 3 and acts[0]["guide"] == "nas-omv-migration"
+    assert acts[0]["effort_min"] == 150
 
 
 def test_isp_wifi_router_and_ap_are_one_project(home):

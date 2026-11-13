@@ -155,6 +155,26 @@
     - Check the vendor's site for a newer firmware line; if none exists, plan a replacement.
     - Until then, keep it off the internet and away from your computers (IoT/guest network).
 
+- id: terramaster-to-omv
+  # TOS lags years behind (TOS 4.2 on Linux 5.15 here), and its stack is mdadm+LVM+ext4,
+  # which any Debian NAS OS adopts in place. One project fixes every finding on the box.
+  match: {make: "(?i)terra ?master"}
+  covers: device
+  title: "Move {device} to OpenMediaVault, keeping the data where it is"
+  who: you
+  effort_min: 150
+  guide: nas-omv-migration
+  why: >-
+    TerraMaster's OS ships old SSH, web server and file-sharing versions and updates
+    slowly. Its disks are plain Linux RAID, so a current Debian-based NAS OS can take
+    them over without copying or reformatting anything, and the old OS stays on the
+    disks as a rollback.
+  steps:
+    - Make sure anything irreplaceable has a second, verified copy off the NAS.
+    - Pull the hard drives, install OpenMediaVault onto an NVMe stick, put the drives back.
+    - Mount the existing array (never create or wipe), recreate the shares as SMB3-only.
+    - Rescan with port scan to confirm the old services are gone.
+
 - id: nas-update
   match: {device_type: [nas], kind: [cve]}
   title: "Update the operating system on {device}"
