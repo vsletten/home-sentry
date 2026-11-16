@@ -186,7 +186,16 @@ def arp_sweep(cidr: str, iface: str, rounds: int = 2) -> dict[str, str]:
     for _ in range(rounds):
         poke(hosts)
         time.sleep(1.5)
-    return netinfo.neighbors(iface)
+    # only this network's addresses: macOS keeps link-local (169.254/16) entries for devices
+    # that failed DHCP on the same interface, and those would rename a known device's IP
+    return {ip: mac for ip, mac in netinfo.neighbors(iface).items() if _in(ip, net)}
+
+
+def _in(ip: str, net) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in net
+    except ValueError:
+        return False
 
 
 def poke(hosts: list[str]) -> None:
@@ -212,7 +221,9 @@ def reverse_dns(ips: list[str]) -> dict[str, str]:
         except OSError:
             return ip, None
 
-    with ThreadPoolExecutor(16) as ex:
+    # gethostbyaddr has no timeout knob and macOS waits ~5s per address with no PTR record:
+    # one thread per address bounds the whole pass at one timeout
+    with ThreadPoolExecutor(max(16, min(len(ips), 256))) as ex:
         return {ip: h for ip, h in ex.map(one, ips) if h}
 
 

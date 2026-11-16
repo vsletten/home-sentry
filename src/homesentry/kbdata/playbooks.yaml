@@ -144,6 +144,23 @@
     - When you have an IoT/guest network, move it there so it can't reach your computers or NAS.
     - Ask the provider whether a newer receiver model is available for your plan.
 
+- id: eol-os-upgrade
+  match: {kind: [eol], title: "(?i)end-of-life operating system"}
+  covers: device   # upgrading the OS also retires every CVE lead on its old daemons
+  title: "Upgrade the end-of-life OS on {device} (or retire it)"
+  who: you
+  effort_min: 60
+  why: >-
+    The whole operating system stopped getting security updates, so every service it runs
+    (often SSH and a web server) carries every bug found since. A small computer like a
+    Raspberry Pi is quickest to fix by reflashing a current OS image.
+  steps:
+    - Decide whether you still need it; if not, unplug it (and remove it here).
+    - Back up anything on it you care about (config files, data, its SD card).
+    - "Raspberry Pi: flash current Raspberry Pi OS with Raspberry Pi Imager, then restore your setup."
+    - "Other Debian-based boxes: upgrade one release at a time, or reinstall the current release."
+    - Turn off SSH password logins (keys only) and close services you don't use.
+
 - id: eol-generic
   match: {kind: [eol]}
   title: "Isolate or replace {device}"

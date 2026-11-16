@@ -365,3 +365,74 @@ def test_store_migrates_nmap_port_evidence_and_drops_rotating_txt(tmp_path):
     ev = {(e["source"], e["key"]) for e in st.evidence(did)}
     assert ("ports", "open_port") in ev and ("nmap", "open_port") not in ev
     assert ("mdns", "txt:_companion-link._tcp") not in ev and ("mdns", "service") in ev
+
+
+def test_arp_sweep_keeps_only_this_networks_addresses(monkeypatch):
+    monkeypatch.setattr(discover, "poke", lambda hosts: None)
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        netinfo,
+        "neighbors",
+        lambda iface: {"10.99.0.5": "00:11:22:33:44:01", "169.254.65.32": "00:11:22:33:44:02"},
+    )
+    assert discover.arp_sweep("10.99.0.0/24", "en0") == {"10.99.0.5": "00:11:22:33:44:01"}
+
+
+def _ev(*sights):
+    return [{"source": s, "key": k, "value": v} for s, k, v in sights]
+
+
+def test_mac_with_airplay_receiver_is_a_computer_not_a_speaker():
+    from homesentry import identify
+
+    g = identify.guess(
+        _ev(
+            ("mdns", "service", "_airplay._tcp"),
+            ("mdns", "service", "_raop._tcp"),
+            ("mdns", "name", "Test Family MacBook Pro"),
+        ),
+        None,
+    )
+    assert (g["make"], g["device_type"]) == ("Apple", "computer")
+    g = identify.guess(_ev(("mdns", "host", "Mac-mini.local")), None)
+    assert g["device_type"] == "computer"
+
+
+def test_raspbian_banner_and_ios_sync_port():
+    from homesentry import identify
+
+    g = identify.guess(
+        _ev(("ports", "open_port", "22/tcp ssh OpenSSH 7.9p1 Raspbian 10+deb10u1 protocol 2.0")),
+        None,
+    )
+    assert (g["make"], g["device_type"]) == ("Raspberry Pi", "computer")
+    g = identify.guess(_ev(("ports", "open_port", "62078/tcp iphone-sync")), None)
+    assert (g["make"], g["device_type"]) == ("Apple", "phone")
+
+
+def test_debian_release_eol_from_ssh_banner():
+    import datetime as dt
+
+    from homesentry import threat
+
+    ev = _ev(("ports", "open_port", "22/tcp ssh OpenSSH 7.9p1 Raspbian 10+deb10u1 protocol 2.0"))
+    rels = threat.os_releases(ev)
+    assert [r["label"] for r in rels] == ["Raspbian 10 (Buster)"]
+    cycles = {
+        "debian": [{"cycle": "10", "eol": "2024-06-30"}, {"cycle": "12", "eol": "2028-06-30"}]
+    }
+    fs = threat.assess_device({"device_type": "computer"}, ev, {}, {}, [], cycles)
+    eol = [f for f in fs if f["kind"] == "eol"]
+    assert eol and eol[0]["severity"] == "high" and "Raspbian 10" in eol[0]["title"]
+    assert threat.os_eol({"cycle": "12"}, cycles["debian"], dt.date(2026, 11, 15)) is None
+    # Ubuntu's suffix ("3ubuntu13.20") carries no Debian release: no guess
+    assert not threat.os_releases(
+        _ev(("ports", "open_port", "22/tcp ssh OpenSSH 9.6p1 Ubuntu 3ubuntu13.20 protocol 2.0"))
+    )
+
+
+def test_eol_os_playbook_claims_the_whole_device():
+    from homesentry import plan
+
+    pbs = {p["id"]: p for p in plan.playbooks()}
+    assert pbs["eol-os-upgrade"]["covers"] == "device"
