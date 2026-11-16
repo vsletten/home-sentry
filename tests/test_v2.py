@@ -480,7 +480,11 @@ def test_doctor_flags_snap_nmap(home, monkeypatch):
     assert r["tool nmap"]["status"] == "fail" and "apt install nmap" in r["tool nmap"]["msg"]
 
 
-def test_doctor_reports_and_fixes_data_dir_mode(home):
+def test_doctor_reports_and_fixes_data_dir_mode(home, monkeypatch):
+    from homesentry import netinfo
+
+    monkeypatch.setattr(netinfo, "platform", lambda: "linux")  # systemd branch, on any host
+    monkeypatch.delenv("HOMESENTRY_TOKEN", raising=False)
     os.chmod(home, 0o755)
     st = Store(home / "inventory.db")
 
@@ -492,6 +496,24 @@ def test_doctor_reports_and_fixes_data_dir_mode(home):
     assert (home.stat().st_mode & 0o777) == 0o700
     assert rows["unit homesentry.service"]["status"] == "ok"
     assert rows["last scan"]["status"] == "warn"
+
+
+def test_doctor_background_service_on_mac_and_in_the_app(home, monkeypatch):
+    from homesentry import netinfo, service
+
+    monkeypatch.setattr(netinfo, "platform", lambda: "darwin")
+    monkeypatch.delenv("HOMESENTRY_TOKEN", raising=False)
+    monkeypatch.setattr(service, "status", lambda: {"kind": "launchd", "state": "not installed"})
+    st = Store(home / "inventory.db")
+    rows = {r["check"]: r for r in doctor.checks(st, runner=lambda *a, **k: None)}
+    assert rows["background service"]["status"] == "warn"
+    assert "homesentry service install" in rows["background service"]["msg"]
+    monkeypatch.setattr(service, "status", lambda: {"kind": "launchd", "state": "running"})
+    rows = {r["check"]: r for r in doctor.checks(st, runner=lambda *a, **k: None)}
+    assert rows["background service"]["status"] == "ok"
+    monkeypatch.setenv("HOMESENTRY_TOKEN", "t")  # started by the desktop app
+    rows = {r["check"]: r for r in doctor.checks(st, runner=lambda *a, **k: None)}
+    assert "desktop app" in rows["background service"]["msg"]
 
 
 # ---- web --------------------------------------------------------------------------------------

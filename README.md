@@ -136,6 +136,18 @@ result against the local inventory (from a backup copy) as the answer key.
 The KB (`src/homesentry/kbdata/devices/*.yaml` seed + `~/.local/share/homesentry/kb/` learned) holds generic
 device knowledge only, so the next device of the same model is recognized automatically.
 
+
+## Desktop app (macOS)
+
+`HomeSentry.app` is the appliance in a window. A small native shell (Tauri, `desktop/`) runs a
+frozen copy of this same package on a random loopback port with a one-time session token,
+shows the UI, keeps monitoring from the menu bar when the window is closed, and turns
+medium-or-worse timeline events into native notifications. Data lives in
+`~/Library/Application Support/HomeSentry/`. If macOS's Local Network permission is off, the app
+says so and doesn't invent a clean bill of health. Build with `packaging/build-mac-app.sh`;
+signing, notarization and CI releases are in [packaging/README.md](packaging/README.md).
+Headless Mac without the app: `homesentry service install` (a LaunchAgent).
+
 ## Run
 
 ```bash

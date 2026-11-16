@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>HomeSentry looks at the devices on your home network to find security problems. Everything it learns stays on this Mac.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_services._dns-sd._udp</string>
+    <string>_airplay._tcp</string>
+    <string>_raop._tcp</string>
+    <string>_companion-link._tcp</string>
+    <string>_googlecast._tcp</string>
+    <string>_ipp._tcp</string>
+    <string>_printer._tcp</string>
+    <string>_smb._tcp</string>
+    <string>_ssh._tcp</string>
+    <string>_http._tcp</string>
+    <string>_hap._tcp</string>
+    <string>_matter._tcp</string>
+    <string>_spotify-connect._tcp</string>
+    <string>_device-info._tcp</string>
+  </array>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.utilities</string>
+</dict>
+</plist>

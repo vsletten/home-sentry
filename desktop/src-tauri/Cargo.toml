@@ -1,0 +1,21 @@
+[package]
+name = "homesentry-desktop"
+version = "0.5.0"
+description = "HomeSentry desktop shell: runs the local backend, shows its UI, lives in the menu bar"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+serde_json = "1"
+getrandom = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
