@@ -71,10 +71,12 @@ def checks(store: Store, runner=subprocess.run) -> list[dict[str, Any]]:
         ("gateway.env", "gateway reader"),
         ("probe.env", "outside-in check"),
         ("notify.env", "push alerts"),
+        ("sensors.env", "remote sensors (networks behind Wi-Fi NAT)"),
     ):
         f = config_dir() / name
         if not f.exists():
-            add(f"config {name}", WARN if name != "notify.env" else OK, f"not set up ({need})")
+            optional = name in ("notify.env", "sensors.env")
+            add(f"config {name}", OK if optional else WARN, f"not set up ({need})")
             continue
         m = f.stat().st_mode & 0o777
         add(
