@@ -1,0 +1,88 @@
+name: mac-app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15        # Apple Silicon
+            arch: arm64
+          - runner: macos-15-intel  # Intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      TEAM_ID: NZDV3AFAEG
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Tests
+        run: uv sync -p 3.13 && uv run pytest -q
+
+      - name: Import signing certificate
+        id: cert
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        if: env.P12 != ''
+        run: |
+          KC=$RUNNER_TEMP/build.keychain-db
+          KCPW=$(uuidgen)
+          echo "$P12" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import $RUNNER_TEMP/cert.p12 -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPW" "$KC"
+          security list-keychains -d user -s "$KC"
+          rm $RUNNER_TEMP/cert.p12
+          ID=$(security find-identity -v -p codesigning "$KC" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.cert.outputs.identity }}
+        run: packaging/build-mac-app.sh
+
+      - name: Notarize + staple
+        if: steps.cert.outputs.identity != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          DMG=$(ls desktop/src-tauri/target/release/bundle/dmg/*.dmg)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+          spctl -a -vvv -t install "$DMG"
+
+      - name: Rename
+        run: |
+          cd desktop/src-tauri/target/release/bundle/dmg
+          for f in *.dmg; do mv "$f" "HomeSentry-${GITHUB_REF_NAME//\//-}-${{ matrix.arch }}.dmg"; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HomeSentry-${{ matrix.arch }}
+          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" desktop/src-tauri/target/release/bundle/dmg/*.dmg --clobber

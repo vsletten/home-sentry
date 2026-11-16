@@ -107,6 +107,20 @@ def checks(store: Store, runner=subprocess.run) -> list[dict[str, Any]]:
         OK if ps and time.time() - ps["finished"] < 2 * 86400 else WARN,
         _age(ps["finished"] if ps else None),
     )
+    if os.environ.get("HOMESENTRY_TOKEN"):
+        add("background service", OK, "desktop app (monitors while running, incl. menu bar)")
+        return out
+    if plat == "darwin":
+        from . import service
+
+        st = service.status()["state"]
+        add(
+            "background service",
+            OK if st in ("running", "active", "loaded") else WARN,
+            f"launchd agent: {st}"
+            + ("" if st != "not installed" else " (use the app, or `homesentry service install`)"),
+        )
+        return out
     if plat != "linux":
         add("background service", WARN, f"no background service for {plat} yet")
         return out
