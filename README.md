@@ -116,6 +116,18 @@ nmap's product naming, so CVE matching reads the same either way. It **never sen
 raw-print ports** (9100-9107, LPD 515): anything sent there comes out of the printer.
 `HOMESENTRY_PORTSCAN=nmap` switches to `nmap -sT -sV` if you prefer it.
 
+**Sensors: seeing behind a Wi-Fi router's NAT.** A machine joined to the Wi-Fi (a Mac mini, a
+laptop) sees a network the appliance's wire never touches. List it in
+`~/.config/homesentry/sensors.env` (mode 600): `SENSORS=macbot-zero` (ssh aliases,
+comma-separated; `SENSOR_SSH_AGENT=` if the key lives in a desktop agent). Every scan then runs
+`homesentry probe --json --skip <networks we scan ourselves>` on each sensor over SSH, in parallel
+with the local scan, and folds the result in through the same pipeline. The sensor stores
+nothing. Its own Wi-Fi address and the router's inner address are recognized as devices we
+already know (the router by its neighboring MAC, Macs by their AirPlay device id), so the map
+draws the network *inside* its router's pocket, and the first sight of a network is one timeline
+event, not a "new device!" per phone. A sensor that's asleep is skipped; its network keeps its
+last known state. `homesentry ingest probe.json` folds in a probe run by hand.
+
 **Checking another machine's view:** `homesentry probe [--ports] [--json]` runs every
 collector and stores nothing. `scripts/remote-test.sh <ssh-host> [--ports]` syncs this tree to
 a machine you own, runs the tests and a live probe there, and `homesentry compare` diffs the

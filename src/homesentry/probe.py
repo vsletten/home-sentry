@@ -37,11 +37,15 @@ def _timed(errors: dict[str, str], timings: dict[str, float], name: str, fn, def
         timings[name] = round(time.monotonic() - t, 2)
 
 
-def collect(ports: bool = False, mdns_seconds: float = 8.0) -> dict[str, Any]:
+def collect(
+    ports: bool = False, mdns_seconds: float = 8.0, skip: list[str] | None = None
+) -> dict[str, Any]:
+    """Run every collector on every LAN this machine is on, except networks in `skip`
+    (an appliance asking a sensor only for what it can't see itself)."""
     errors: dict[str, str] = {}
     timings: dict[str, float] = {}
     out: dict[str, Any] = {
-        "probe_version": 1,
+        "probe_version": 2,
         "host": {
             "platform": netinfo.platform(),
             "os": f"{pyplatform.system()} {pyplatform.release()}",
@@ -57,6 +61,10 @@ def collect(ports: bool = False, mdns_seconds: float = 8.0) -> dict[str, Any]:
         "networks": [],
     }
     ctxs = _timed(errors, timings, "lan_contexts", discover.lan_contexts, [])
+    # every interface, skipped or not: lets the appliance recognize this machine's own
+    # addresses on networks it scans itself
+    out["interfaces"] = [{k: c.get(k) for k in ("iface", "local_ip", "cidr", "mac")} for c in ctxs]
+    ctxs = [c for c in ctxs if c["cidr"] not in set(skip or [])]
     peers = _timed(errors, timings, "tailscale", discover.tailscale_peers, {})
     out["tailscale_peers_on_lan"] = len(peers)
     for ctx in ctxs:

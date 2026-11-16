@@ -310,13 +310,17 @@ class Store:
                 return dict(r, summary=s)
         return None
 
-    def mark_presence(self, started: float) -> None:
-        """After a scan: a device is online iff it answered during this scan."""
-        self.db.execute(
-            "UPDATE devices SET online = CASE WHEN last_seen >= ? THEN 1 ELSE 0 END"
-            " WHERE mac IS NOT NULL",
-            (started,),
-        )
+    def mark_presence(self, started: float, networks: list[str] | None = None) -> None:
+        """After a scan: a device is online iff it answered during this scan. With `networks`,
+        only devices on networks that were actually scanned are judged: a sensor that was
+        asleep this time must not take its whole network "offline"."""
+        sql = "UPDATE devices SET online = CASE WHEN last_seen >= ? THEN 1 ELSE 0 END"
+        sql += " WHERE mac IS NOT NULL"
+        args: list[Any] = [started]
+        if networks is not None:
+            sql += f" AND (network IS NULL OR network IN ({','.join('?' * len(networks))}))"
+            args += networks
+        self.db.execute(sql, args)
         self.db.commit()
 
     # ---- events (v2) ---------------------------------------------------

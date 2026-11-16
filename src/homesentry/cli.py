@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> None:
     pr.add_argument("--ports", action="store_true", help="also scan ports and identify services")
     pr.add_argument("--json", action="store_true", help="machine-readable output")
     pr.add_argument("--mdns-seconds", type=float, default=8.0)
+    pr.add_argument("--skip", action="append", default=[], help="CIDR to leave out (repeatable)")
+    ig = sub.add_parser("ingest", help="fold a probe from another machine into the inventory")
+    ig.add_argument("probe_json", help="output of `homesentry probe --json` ('-' for stdin)")
+    ig.add_argument("--sensor", default="manual", help="name to record as the sensor")
     cp = sub.add_parser("compare", help="diff a probe (from another machine) against the inventory")
     cp.add_argument("probe_json", help="output of `homesentry probe --json` ('-' for stdin)")
     cp.add_argument("--json", action="store_true")
@@ -51,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
 
         from . import probe
 
-        got = probe.collect(ports=a.ports, mdns_seconds=a.mdns_seconds)
+        got = probe.collect(ports=a.ports, mdns_seconds=a.mdns_seconds, skip=a.skip)
         if a.json:
             print(json.dumps(got, indent=1))
         else:
@@ -65,6 +69,15 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1 if got["errors"] else 0)
 
     store = Store(data_dir() / "inventory.db")
+    if a.cmd == "ingest":
+        import json
+        import sys
+
+        from .scan import ingest_probe
+
+        src = sys.stdin if a.probe_json == "-" else open(a.probe_json)  # noqa: SIM115
+        print(json.dumps(ingest_probe(store, json.load(src), a.sensor), indent=1))
+        return
     if a.cmd == "compare":
         import json
         import sys

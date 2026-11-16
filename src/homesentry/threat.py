@@ -125,6 +125,13 @@ EXPOSURE: dict[str, tuple[str, str, str]] = {
     "554": ("low", "RTSP video stream port open", "Camera streams often have weak/no auth."),
 }
 INTENTIONAL_ON = {"computer"}  # remote access on your own computers is usually deliberate
+AUTO_UPDATE_TYPES = {"phone", "tablet", "streaming", "speaker", "tv"}
+
+
+def auto_updating(device: dict[str, Any]) -> bool:
+    """Consumer devices whose whole OS (bundled daemons included) the maker updates silently."""
+    make = (device.get("make") or "").lower()
+    return make == "apple" and (device.get("device_type") or "") in AUTO_UPDATE_TYPES
 
 
 def vkey(v: str) -> list[tuple[int, Any]]:
@@ -348,6 +355,15 @@ def assess_device(
             if SEVERITY_ORDER.index(sev) < SEVERITY_ORDER.index("medium"):
                 sev = "medium"
             detail += " On a computer this is fixed by OS updates; check it's current."
+        elif auto_updating(device) and not comp["backported"]:
+            # Apple TV / HomePod / iPhone: the vendor patches the bundled daemon in its automatic
+            # OS updates, and the owner can't touch it anyway
+            if SEVERITY_ORDER.index(sev) < SEVERITY_ORDER.index("medium"):
+                sev = "medium"
+            detail += (
+                " This device's maker patches it through automatic updates; make sure they're "
+                "on and it has installed the latest."
+            )
         if comp["backported"]:
             sev = "info"
             detail += (

@@ -146,7 +146,6 @@
 
 - id: eol-os-upgrade
   match: {kind: [eol], title: "(?i)end-of-life operating system"}
-  covers: device   # upgrading the OS also retires every CVE lead on its old daemons
   title: "Upgrade the end-of-life OS on {device} (or retire it)"
   who: you
   effort_min: 60

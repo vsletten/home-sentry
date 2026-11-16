@@ -107,12 +107,20 @@ def model(store: Store, icon=lambda t: "❔") -> dict[str, Any]:
             if e["source"] == "outside" and e["key"] == "result":
                 r = json.loads(e["value"])
                 outside = {"open": len(r.get("open", [])), "scanned": r.get("scanned")}
+    # networks a sensor saw behind a router we know (the router's wired twin is the same box)
+    routes: dict[str, int] = {}
+    evid = {d["id"]: store.evidence(d["id"]) for d in devices}
+    for d in devices:
+        for e in evid[d["id"]]:
+            if e["source"] == "sensor" and e["key"] == "routes_network":
+                routes[e["value"]] = d["id"]
     nodes = []
     for d in devices:
         if gw and d["id"] == gw["id"]:
             continue
         nodes.append(
             {
+                "network": d.get("network"),
                 "id": d["id"],
                 "label": d["label"] or d["model"] or d["make"] or d["ip"] or "Unknown",
                 "sub": " · ".join(x for x in (d["make"], d["model"]) if x)
@@ -124,9 +132,21 @@ def model(store: Store, icon=lambda t: "❔") -> dict[str, Any]:
                 "risks": count.get(d["id"], 0),
                 "offline": d.get("online") == 0 or (d["mac"] and not d["last_seen"]),
                 "confirmed": bool(d["confirmed"]),
-                "hidden": _hidden(store.evidence(d["id"])),
+                "hidden": _hidden(evid[d["id"]]),
+                "inside": [],
             }
         )
+    by_id = {n["id"]: n for n in nodes}
+    for n in list(nodes):
+        router = routes.get(n["network"] or "")
+        if router and router != n["id"] and router in by_id:
+            by_id[router]["inside"].append(n)
+            by_id[router]["routed"] = n["network"]
+            nodes.remove(n)
+    for n in nodes:
+        n["inside"].sort(key=lambda c: (SEV.index(c["worst"] or "info"), c["label"]))
+        if n["inside"] and n["hidden"] is None:
+            n["hidden"] = []
     order = {name: i for i, (name, _) in enumerate(LANES)} | {OTHER: len(LANES)}
     nodes.sort(key=lambda n: (order[n["lane"]], SEV.index(n["worst"] or "info"), n["label"]))
     return {
@@ -177,6 +197,46 @@ def _node(n: dict[str, Any], x: float, y: float) -> str:
         f"{_fit(sub, NODE_W - 46 - (26 if tick else 10), 11)}</text>"
         f"{badge}{tick}</g></a>"
     )
+
+
+def _pocket(n: dict[str, Any], x: float, y: float) -> tuple[list[str], float]:
+    """The dashed 'hidden network' box under a NAT router: its devices, if a sensor has seen
+    them (each a link, colored by risk), else what we can infer (Tailscale peers behind it)."""
+    hx, hy, w = x + 34, y + 8, NODE_W - 16
+    inside = n.get("inside") or []
+    if inside:
+        title = f"🙈 {n.get('routed') or 'hidden network'} · {len(inside)}"
+        rows = len(inside)
+    else:
+        title = "🙈 hidden network (NAT)"
+        lines = [f"• {h}" for h in (n["hidden"] or [])[:4]] + ["• + its own Wi-Fi clients"]
+        rows = len(lines)
+    hh = 30 + 17 * rows if inside else 30 + 15 * rows
+    out = [
+        f'<line x1="{hx + 14}" y1="{y}" x2="{hx + 14}" y2="{hy}" class="edge dash"/>'
+        f'<rect x="{hx}" y="{hy}" width="{w}" height="{hh}" rx="10" class="hidden"/>'
+        f'<text x="{hx + 10}" y="{hy + 18}" class="sub b">{_fit(title, w - 18, 11, True)}</text>'
+    ]
+    if inside:
+        for i, c in enumerate(inside):
+            ry = hy + 36 + 17 * i
+            color = SEV_COLOR.get(c["worst"], "var(--ok)")
+            op = ' opacity="0.45"' if c.get("offline") else ""
+            risk = f" · {c['risks']}" if c.get("risks") else ""
+            tip = html.escape(f"{c['label']} · {c.get('sub') or ''} · {c.get('ip') or ''}")
+            out.append(
+                f'<a href="/device/{c["id"]}"><g{op}><title>{tip}</title>'
+                f'<circle cx="{hx + 14}" cy="{ry - 4}" r="4" fill="{color}"/>'
+                f'<text x="{hx + 24}" y="{ry}" class="sub">'
+                f"{_fit(c['icon'] + ' ' + c['label'] + risk, w - 34, 11)}</text></g></a>"
+            )
+    else:
+        for i, line in enumerate(lines):
+            out.append(
+                f'<text x="{hx + 10}" y="{hy + 36 + 15 * i}" class="sub">'
+                f"{_fit(line, NODE_W - 36, 11)}</text>"
+            )
+    return out, hy + hh
 
 
 def svg(m: dict[str, Any]) -> Markup:
@@ -243,22 +303,8 @@ def svg(m: dict[str, Any]) -> Markup:
             last_tick = mid
             y = ny + NODE_H
             if n["hidden"] is not None:
-                lines = [f"• {h}" for h in n["hidden"][:4]] + ["• + its own Wi-Fi clients"]
-                hh = 30 + 15 * len(lines)
-                hx, hy = x + 34, y + 8
-                parts.append(
-                    f'<line x1="{hx + 14}" y1="{y}" x2="{hx + 14}" y2="{hy}" class="edge dash"/>'
-                    f'<rect x="{hx}" y="{hy}" width="{NODE_W - 16}" height="{hh}" rx="10" '
-                    'class="hidden"/>'
-                    f'<text x="{hx + 10}" y="{hy + 18}" class="sub b">'
-                    "🙈 hidden network (NAT)</text>"
-                )
-                for i, line in enumerate(lines):
-                    parts.append(
-                        f'<text x="{hx + 10}" y="{hy + 36 + 15 * i}" class="sub">'
-                        f"{_fit(line, NODE_W - 36, 11)}</text>"
-                    )
-                y = hy + hh
+                parts_, y = _pocket(n, x, y)
+                parts += parts_
             y += GAP
         parts.append(
             f'<line x1="{trunk}" y1="{bus_y}" x2="{trunk}" y2="{last_tick}" class="edge"/>'

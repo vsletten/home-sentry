@@ -431,8 +431,25 @@ def test_debian_release_eol_from_ssh_banner():
     )
 
 
-def test_eol_os_playbook_claims_the_whole_device():
+def test_eol_os_finding_gets_the_os_upgrade_action(tmp_path):
+    """Tested through the real plan, not the YAML: a `covers: device` playbook matches on device
+    fields only, so a title-matched one silently never fires (it didn't, the first time)."""
     from homesentry import plan
 
-    pbs = {p["id"]: p for p in plan.playbooks()}
-    assert pbs["eol-os-upgrade"]["covers"] == "device"
+    st = Store(tmp_path / "inv.db")
+    did = st.upsert_seen("b8:27:eb:00:00:01", "10.99.0.44", None, "Raspberry Pi")
+    st.set_identity(did, {"device_type": "computer", "make": "Raspberry Pi"}, "auto", 0.5)
+    st.replace_findings(
+        did,
+        [
+            {
+                "severity": "high",
+                "kind": "eol",
+                "title": "End-of-life operating system: Raspbian 10 (Buster)",
+                "detail": "",
+                "data": {},
+            }
+        ],
+    )
+    acts = plan.build(st)["actions"]
+    assert any(a["playbook"] == "eol-os-upgrade" for a in acts), [a["title"] for a in acts]

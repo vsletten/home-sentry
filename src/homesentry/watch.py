@@ -76,7 +76,16 @@ def snapshot(store: Store) -> dict[str, Any]:
         did = d["id"]
         snap["devices"][did] = {
             k: d.get(k)
-            for k in ("mac", "ip", "online", "firmware", "retired", "device_type", "confirmed")
+            for k in (
+                "mac",
+                "ip",
+                "online",
+                "firmware",
+                "retired",
+                "device_type",
+                "confirmed",
+                "network",
+            )
         } | {"vendor": d.get("oui_vendor")}
         ev = store.evidence(did)
         snap["ports"][did] = sorted(
@@ -120,10 +129,33 @@ def diff(before: dict[str, Any], after: dict[str, Any], ports_scanned: bool) -> 
     def watched(d: dict[str, Any]) -> bool:
         return bool(d.get("confirmed")) or (d.get("device_type") or "") in INFRA
 
+    # A network nobody had seen before (a sensor just looked behind a Wi-Fi router's NAT):
+    # one event for the network, not a "new device!" alarm per phone and smart plug on it.
+    known_nets = {b.get("network") for b in bdev.values()}
+    fresh: dict[str, list[int]] = {}
+    for did, a in adev.items():
+        if did not in bdev and a["mac"] and not a["retired"] and a["online"]:
+            if a.get("network") and a["network"] not in known_nets:
+                fresh.setdefault(a["network"], []).append(did)
+    for cidr, dids in sorted(fresh.items()):
+        out.append(
+            _ev(
+                "network_new",
+                "info",
+                f"New network discovered: {cidr} ({len(dids)} devices)",
+                None,
+                "Seen for the first time, usually by a sensor on another machine. Its devices "
+                "are now in the inventory; identify any you don't recognize.",
+                cidr=cidr,
+                devices=dids,
+            )
+        )
+    grouped = {d for ds in fresh.values() for d in ds}
+
     for did, a in adev.items():
         b = bdev.get(did)
         if b is None:
-            if not a["mac"] or a["retired"]:
+            if not a["mac"] or a["retired"] or did in grouped:
                 continue
             if a["online"]:
                 out.append(
