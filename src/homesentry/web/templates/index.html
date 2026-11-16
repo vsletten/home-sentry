@@ -24,7 +24,7 @@ h2.net{font-size:14px;margin:22px 0 10px;color:var(--mute);font-weight:600;lette
 
 <div class="hero">
   <a class="card posture" href="/plan" title="How the score works: Plan page">
-    {{ ui.gauge(plan.score, plan.grade) }}
+    {% if lan_status().blocked or lan_status().empty %}{{ ui.gauge(none, "?") }}{% else %}{{ ui.gauge(plan.score, plan.grade) }}{% endif %}
     {{ ui.spark(trend) }}
     <span class="small mute">{% for s, n in plan.counts.items() if n %}<span class="chip {{ s }}">{{ n }} {{ s }}</span> {% endfor %}</span>
   </a>

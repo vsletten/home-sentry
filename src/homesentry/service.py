@@ -49,7 +49,7 @@ def launch_agent(exe: str, every_min: float, log_dir: Path, bind: str | None) ->
         "ThrottleInterval": 30,
         "StandardOutPath": str(log_dir / "agent.log"),
         "StandardErrorPath": str(log_dir / "agent.log"),
-        "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONUNBUFFERED": "1"},
     }
 
 

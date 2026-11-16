@@ -41,6 +41,13 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
     tpl = Jinja2Templates(env=ui.env())
     install_session_auth(app, os.environ.get("HOMESENTRY_TOKEN") or None)
 
+    def lan_status() -> dict[str, bool]:
+        last = S().last_scan()
+        blocked = bool(last and (last.get("summary") or {}).get("local_network_blocked"))
+        return {"blocked": blocked, "empty": not S().devices()}
+
+    tpl.env.globals["lan_status"] = lan_status
+
     def S() -> Store:
         return app.state.store
 

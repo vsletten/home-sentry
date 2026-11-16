@@ -149,3 +149,15 @@ def test_launch_agent_plist_shape(tmp_path):
         "--host",
         "100.64.0.9",
     ]
+
+
+def test_ui_never_shows_a_grade_for_a_blind_or_empty_scan(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOMESENTRY_TOKEN", raising=False)
+    st = Store(tmp_path / "inv.db")
+    c = TestClient(webapp.create_app(st))
+    html = c.get("/").text
+    assert "No scan yet" in html
+    st.record_scan(time.time(), {"local_network_blocked": True})
+    html = c.get("/map").text
+    assert "can&#39;t see your network" in html or "can't see your network" in html
+    assert "Local Network" in html

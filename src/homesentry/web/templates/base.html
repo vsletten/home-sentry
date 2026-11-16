@@ -38,6 +38,9 @@ h2.sec{font-size:15px;margin:22px 0 10px}
 .ev{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line)}
 .ev:first-child{border-top:0}.evi{font-size:17px;width:22px;text-align:center}
 a.dref{color:var(--acc);font-weight:600}
+.lanwarn{margin:14px auto 0;max-width:1100px;padding:12px 16px;border-radius:12px;background:#d6454518;
+border:1px solid var(--bad);font-size:14px;line-height:1.45}
+.lanwarn.info{background:#d98e0418;border-color:var(--warn)}
 </style>
 </head>
 <body>
@@ -52,6 +55,15 @@ a.dref{color:var(--acc);font-weight:600}
   <a href="/report" class="{{ 'on' if here.startswith('/report') }}">Report</a>
   <a href="/guides" class="{{ 'on' if here.startswith('/guides') }}">Guides</a>
 </nav></header>
+{% set lan = lan_status() %}
+{% if lan.blocked %}
+<div class="lanwarn" role="alert"><b>⚠️ HomeSentry can't see your network.</b>
+macOS is blocking it: open <b>System Settings → Privacy &amp; Security → Local Network</b> and
+switch HomeSentry on. Until then nothing below is current, and an empty house is not a safe one.</div>
+{% elif lan.empty %}
+<div class="lanwarn info" role="status"><b>No scan yet.</b> The first scan starts within a minute
+of launch (or press Scan); the score means nothing until it has seen your devices.</div>
+{% endif %}
 <main>{% block body %}{% endblock %}</main>
 </body>
 </html>
