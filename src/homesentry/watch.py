@@ -302,5 +302,31 @@ def run_watch(
     return summary
 
 
+def start_scheduler(store: Store, every_min: float, first_after_s: float = 45, log=print):
+    """In-process monitoring for the desktop app (no systemd timer / launchd needed): one
+    watch tick every `every_min` minutes in a daemon thread. Shares the scan lock with the
+    Scan button, so they never collide; a busy lock just skips that tick."""
+    import threading
+
+    stop = threading.Event()
+
+    def loop():
+        if stop.wait(first_after_s):
+            return
+        while True:
+            try:
+                run_watch(store, log=log)
+            except ScanBusy:
+                pass
+            except Exception as e:  # noqa: BLE001 - the scheduler must outlive any one tick
+                log(f"watch tick failed: {e}")
+            if stop.wait(every_min * 60):
+                return
+
+    t = threading.Thread(target=loop, name="homesentry-watch", daemon=True)
+    t.start()
+    return stop
+
+
 def describe(events: list[dict[str, Any]]) -> str:
     return json.dumps([{k: e[k] for k in ("kind", "severity", "title")} for e in events])

@@ -9,7 +9,7 @@
   <path d="M20 96 A70 70 0 0 1 160 96" fill="none" stroke="var(--chip)" stroke-width="15" stroke-linecap="round"/>
   <path d="M20 96 A70 70 0 0 1 160 96" fill="none" stroke="{{ grade_color(grade) }}" stroke-width="15"
         stroke-linecap="round" stroke-dasharray="{{ '%.1f'|format(f * c) }} {{ '%.1f'|format(c) }}"/>
-  <text x="90" y="82" text-anchor="middle" style="font:800 38px system-ui;fill:var(--ink)">{{ score }}</text>
+  <text x="90" y="82" text-anchor="middle" style="font:800 38px system-ui;fill:var(--ink)">{{ "—" if score is none else score }}</text>
   <text x="90" y="104" text-anchor="middle" style="font:650 13px system-ui;fill:{{ grade_color(grade) }}">grade {{ grade }}</text>
 </svg>
 {%- endmacro %}

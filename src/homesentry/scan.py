@@ -41,11 +41,23 @@ def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
     except PermissionError as e:
         log(f"sensors: {e}")
         pending = None
+    from . import netinfo
+
+    blocked = bool(nets_ctx) and netinfo.local_network_blocked(nets_ctx[0]["gateway"])
+    if blocked:
+        log(
+            "Local Network access is OFF for HomeSentry (macOS privacy). Turn it on in "
+            "System Settings > Privacy & Security > Local Network; until then the LAN looks empty."
+        )
+        nets_ctx = []  # an empty view must not mark every device offline
+        local_cidrs_scanned: list[str] = []
+    else:
+        local_cidrs_scanned = list(local_cidrs)
     nets = [
         _apply_network(store, _collect_local(ctx, ports, log), peers, entries, log)
         for ctx in nets_ctx
     ]
-    scanned = list(local_cidrs)
+    scanned = local_cidrs_scanned
     sensor_report = []
     for fut in pending or []:
         got = fut.result()
@@ -70,6 +82,8 @@ def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
     }
     if sensor_report:
         summary["sensors"] = sensor_report
+    if blocked:
+        summary["local_network_blocked"] = True
     if ports and not ports_ok:
         log("port scan did not complete; keeping the previous port evidence")
     if gateway:

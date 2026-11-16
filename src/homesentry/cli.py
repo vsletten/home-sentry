@@ -11,6 +11,9 @@ from .store import Store
 
 
 def main(argv: list[str] | None = None) -> None:
+    from . import load_env_file
+
+    load_env_file()
     ap = argparse.ArgumentParser(prog="homesentry")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("scan", help="discover devices on the LAN")
@@ -41,15 +44,39 @@ def main(argv: list[str] | None = None) -> None:
     cp = sub.add_parser("compare", help="diff a probe (from another machine) against the inventory")
     cp.add_argument("probe_json", help="output of `homesentry probe --json` ('-' for stdin)")
     cp.add_argument("--json", action="store_true")
+    sv = sub.add_parser("service", help="run in the background at login (macOS launchd)")
+    sv.add_argument("action", choices=["install", "uninstall", "status"])
+    sv.add_argument("--every", type=float, default=30, help="minutes between monitoring ticks")
+    sv.add_argument("--host", default=None, help="UI bind address (default loopback)")
     v = sub.add_parser("serve", help="run the web UI")
     v.add_argument(
         "--host",
-        default=os.environ.get("HOMESENTRY_BIND", "127.0.0.1"),
+        default=None,
         help="bind address (default $HOMESENTRY_BIND, else loopback; use your tailnet IP)",
     )
     v.add_argument("--port", type=int, default=8720)
+    v.add_argument(
+        "--watch-every",
+        type=float,
+        default=0,
+        metavar="MIN",
+        help="also run the monitoring tick every MIN minutes in-process (desktop app mode)",
+    )
     a = ap.parse_args(argv)
+    if a.cmd == "serve" and a.host is None:  # after load_env_file: the env file may set it
+        a.host = os.environ.get("HOMESENTRY_BIND", "127.0.0.1")
 
+    if a.cmd == "service":
+        import json
+
+        from . import service
+
+        if a.action == "install":
+            print(f"installed {service.install(a.every, a.host)}")
+        elif a.action == "uninstall":
+            print("removed" if service.uninstall() else "not installed")
+        print(json.dumps(service.status(), indent=1))
+        return
     if a.cmd == "probe":  # before the Store: a probe on a build/test machine creates no inventory
         import json
 
@@ -173,7 +200,11 @@ def main(argv: list[str] | None = None) -> None:
 
         from .web.app import create_app
 
-        uvicorn.run(create_app(store), host=a.host, port=a.port)
+        if a.watch_every > 0:
+            from .watch import start_scheduler
+
+            start_scheduler(store, a.watch_every)
+        uvicorn.run(create_app(store), host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":
