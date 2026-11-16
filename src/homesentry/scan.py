@@ -163,13 +163,13 @@ def _alias(store, net, ip, mac, sensor_macs) -> int | None:
                 return d["id"]
     # Apple devices: the AirPlay device id is per machine, not per interface, so a MacBook on
     # Ethernet and Wi-Fi at once is one device (and its findings must count once)
-    ids = sensors.apple_ids(net["mdns"].get(ip, []))
-    if ids:
+    mine = net["mdns"].get(ip, [])
+    ids, hosts = sensors.apple_ids(mine), sensors.mdns_hosts(mine)
+    if ids or hosts:
         for d in others:
-            theirs = sensors.apple_ids(
-                [(e["source"], e["key"], e["value"]) for e in store.evidence(d["id"])]
-            )
-            if ids & theirs:
+            ev = [(e["source"], e["key"], e["value"]) for e in store.evidence(d["id"])]
+            apple = (d.get("make") or "").lower() == "apple"
+            if ids & sensors.apple_ids(ev) or (apple and hosts & sensors.mdns_hosts(ev)):
                 store.add_evidence(d["id"], "sensor", "also_at", f"{ip} on {ctx['cidr']}")
                 return d["id"]
     if ip == ctx.get("gateway"):
@@ -179,6 +179,15 @@ def _alias(store, net, ip, mac, sensor_macs) -> int | None:
                 store.add_evidence(d["id"], "sensor", "inner_address", f"{ip} ({mac})")
                 return d["id"]
     return None
+
+
+def _fold_duplicate(store, mac: str, cidr: str, twin: int) -> None:
+    """An earlier pass created a separate record for this address before we could tell it was
+    `twin` (its mDNS id hadn't been heard yet). Retire it, unless the owner touched it."""
+    dup = next((d for d in store.devices() if d["mac"] == mac and d["network"] == cidr), None)
+    if dup and dup["id"] != twin and not dup["confirmed"] and dup["id_source"] in (None, "auto"):
+        store.add_evidence(dup["id"], "sensor", "merged_into", str(twin))
+        store.retire(dup["id"])
 
 
 def _apply_network(store, net, peers, entries, log, sensor_macs=frozenset()) -> dict[str, Any]:
@@ -193,7 +202,8 @@ def _apply_network(store, net, peers, entries, log, sensor_macs=frozenset()) -> 
         )
     hosts = 0
     for ip, mac in neigh.items():
-        if net.get("via") and _alias(store, net, ip, mac, sensor_macs) is not None:
+        if net.get("via") and (twin := _alias(store, net, ip, mac, sensor_macs)) is not None:
+            _fold_duplicate(store, mac, ctx["cidr"], twin)
             continue
         hosts += 1
         vendor = discover.oui_vendor(mac)

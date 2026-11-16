@@ -251,3 +251,27 @@ def test_unreachable_sensor_is_reported_not_fatal(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
     got = sensors.run_one("x", {"agent": None, "path": "/bin"}, [], False)
     assert got == {"host": "x", "error": "ssh: connect to host x port 22: Host is down"}
+
+
+def test_late_recognized_twin_folds_the_duplicate_and_hostname_merges_apple(house):
+    st, _, _ = house
+    lap = st.upsert_seen("1c:f6:4c:00:00:77", "10.99.0.28", None, "Apple", network=LAN)
+    st.set_identity(lap, {"make": "Apple", "device_type": "computer"}, "auto", 0.6)
+    st.add_evidence(lap, "mdns", "host", "Test-MacBook.local")
+    p = probe_json()
+    # first pass: the laptop's Wi-Fi said nothing on mDNS -> a separate unknown record
+    p["networks"][0]["hosts"]["172.31.9.28"] = {"mac": "ca:00:00:00:00:28", "sightings": []}
+    apply(st, p)
+    dup = next(d for d in st.devices() if d["ip"] == "172.31.9.28")
+    # next pass it announces its host name: same Mac -> duplicate retired, twin noted
+    p["networks"][0]["hosts"]["172.31.9.28"]["sightings"] = [["mdns", "host", "Test-MacBook.local"]]
+    apply(st, p)
+    assert "172.31.9.28" not in {d["ip"] for d in st.devices()}
+    assert st.device(dup["id"])["retired"]
+    assert any(e["key"] == "also_at" for e in st.evidence(lap))
+    # generic host names never merge
+    from homesentry import sensors as s_
+
+    assert not s_.mdns_hosts(
+        [("mdns", "host", "Android.local"), ("mdns", "host", "iPhone-2.local")]
+    )
