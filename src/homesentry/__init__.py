@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 
 def data_dir() -> Path:

@@ -26,6 +26,8 @@ def run_scan(
 
 
 def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
+    from . import sensors
+
     started = time.time()
     before = watch.snapshot(store)
     entries = kblib.load()
@@ -33,7 +35,31 @@ def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
     if peers:
         log(f"Tailscale: {len(peers)} peers with a direct LAN path")
     nets_ctx = discover.lan_contexts()
-    nets = [_scan_network(store, ctx, peers, entries, ports, log) for ctx in nets_ctx]
+    local_cidrs = [c["cidr"] for c in nets_ctx]
+    try:  # remote sensors run while we scan locally; they're asked only for other networks
+        pending = sensors.start(skip=local_cidrs, ports=ports)
+    except PermissionError as e:
+        log(f"sensors: {e}")
+        pending = None
+    nets = [
+        _apply_network(store, _collect_local(ctx, ports, log), peers, entries, log)
+        for ctx in nets_ctx
+    ]
+    scanned = list(local_cidrs)
+    sensor_report = []
+    for fut in pending or []:
+        got = fut.result()
+        if "error" in got:
+            log(f"sensor {got['host']}: skipped ({got['error']})")
+            sensor_report.append({"host": got["host"], "error": got["error"]})
+            continue
+        own = sensors.sensor_macs(got["probe"])
+        for net in sensors.networks_from_probe(got["probe"], got["host"]):
+            if net["ctx"]["cidr"] in scanned:
+                continue
+            nets.append(_apply_network(store, net, {}, entries, log, sensor_macs=own))
+            scanned.append(net["ctx"]["cidr"])
+        sensor_report.append({"host": got["host"], "errors": got["probe"].get("errors") or {}})
     ports_ok = bool(ports and nets and all(n["ports_ok"] for n in nets))
     summary: dict[str, Any] = {
         "networks": nets,
@@ -42,13 +68,15 @@ def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
         "ports": ports_ok,
         **extra,
     }
+    if sensor_report:
+        summary["sensors"] = sensor_report
     if ports and not ports_ok:
         log("port scan did not complete; keeping the previous port evidence")
     if gateway:
         gw = _gateway_pass(store, nets_ctx[0] if nets_ctx else None, entries, log)
         if gw:
             summary["gateway"] = gw
-    store.mark_presence(started)
+    store.mark_presence(started, networks=scanned)
     if threats:
         from . import threat
 
@@ -72,7 +100,33 @@ def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
     return summary | {"event_list": events}
 
 
-def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
+def ingest_probe(store: Store, probe: dict[str, Any], sensor: str, log=print) -> dict[str, Any]:
+    """Fold a probe someone ran by hand into the inventory (networks the appliance itself
+    scans are left alone: its own view of them is fresher and complete)."""
+    from . import sensors, threat
+
+    with watch.scan_lock():
+        started = time.time()
+        before = watch.snapshot(store)
+        entries = kblib.load()
+        try:
+            local = {c["cidr"] for c in discover.lan_contexts()}
+        except RuntimeError:
+            local = set()
+        own = sensors.sensor_macs(probe)
+        nets = [
+            _apply_network(store, n, {}, entries, log, sensor_macs=own)
+            for n in sensors.networks_from_probe(probe, sensor)
+            if n["ctx"]["cidr"] not in local
+        ]
+        store.mark_presence(started, networks=[n["cidr"] for n in nets])
+        threat.run(store, log=log)
+        events = watch.diff(before, watch.snapshot(store), ports_scanned=False)
+        store.add_events(events)
+        return {"networks": nets, "events": len(events)}
+
+
+def _collect_local(ctx, ports, log) -> dict[str, Any]:
     log(f"LAN {ctx['cidr']} on {ctx['iface']} (gateway {ctx['gateway'] or '?'})")
     neigh = discover.arp_sweep(ctx["cidr"], ctx["iface"])
     if ctx.get("mac"):
@@ -91,10 +145,62 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
             if svc is not None
             else f"  ports ({eng}): failed"
         )
+    return {"ctx": ctx, "neigh": neigh, "names": names, "mdns": mdns, "ssdp": ssdp, "svc": svc}
 
+
+def _alias(store, net, ip, mac, sensor_macs) -> int | None:
+    """A device we already know under another address on another network: the sensor's own
+    Wi-Fi interface, or the router that owns this network (same box, neighboring MAC)."""
+    from . import sensors
+
+    ctx = net["ctx"]
+    known = [d for d in store.devices(include_retired=True) if d["mac"] and d["network"]]
+    others = [d for d in known if d["network"] != ctx["cidr"]]
+    if mac in sensor_macs or mac == ctx.get("mac"):
+        for d in others:
+            if d["mac"] in sensor_macs:
+                store.add_evidence(d["id"], "sensor", "also_at", f"{ip} on {ctx['cidr']}")
+                return d["id"]
+    # Apple devices: the AirPlay device id is per machine, not per interface, so a MacBook on
+    # Ethernet and Wi-Fi at once is one device (and its findings must count once)
+    ids = sensors.apple_ids(net["mdns"].get(ip, []))
+    if ids:
+        for d in others:
+            theirs = sensors.apple_ids(
+                [(e["source"], e["key"], e["value"]) for e in store.evidence(d["id"])]
+            )
+            if ids & theirs:
+                store.add_evidence(d["id"], "sensor", "also_at", f"{ip} on {ctx['cidr']}")
+                return d["id"]
+    if ip == ctx.get("gateway"):
+        for d in others:
+            if sensors.same_box(d["mac"], mac):
+                store.add_evidence(d["id"], "sensor", "routes_network", ctx["cidr"])
+                store.add_evidence(d["id"], "sensor", "inner_address", f"{ip} ({mac})")
+                return d["id"]
+    return None
+
+
+def _apply_network(store, net, peers, entries, log, sensor_macs=frozenset()) -> dict[str, Any]:
+    """Fold one collected network (local or from a sensor) into the inventory."""
+    ctx = net["ctx"]
+    neigh, names, mdns, ssdp, svc = (net[k] for k in ("neigh", "names", "mdns", "ssdp", "svc"))
+    if net.get("via"):
+        log(
+            f"sensor {net['via']}: {ctx['cidr']} (gateway {ctx['gateway'] or '?'}): "
+            f"{len(neigh)} hosts, {len(mdns)} mDNS, {len(ssdp)} SSDP"
+            + (f", ports on {len(svc)}" if svc is not None else "")
+        )
+    hosts = 0
     for ip, mac in neigh.items():
+        if net.get("via") and _alias(store, net, ip, mac, sensor_macs) is not None:
+            continue
+        hosts += 1
         vendor = discover.oui_vendor(mac)
         did = store.upsert_seen(mac, ip, names.get(ip), vendor, network=ctx["cidr"])
+        if net.get("via"):
+            store.clear_evidence(did, "sensor")
+            store.add_evidence(did, "sensor", "seen_by", net["via"])
         if discover.is_random_mac(mac):
             store.add_evidence(did, "arp", "mac_randomized", "yes")
         rnd = discover.is_random_mac(mac)
@@ -122,7 +228,7 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
             ev,
             vendor,
             is_gateway=ip == ctx["gateway"],
-            is_self=ip == ctx["local_ip"],
+            is_self=ip == ctx["local_ip"] and not net.get("via"),
             kb_entries=entries,
         )
         fields = {k: g[k] for k in ("device_type", "make", "model")}
@@ -135,7 +241,8 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
     return {
         "cidr": ctx["cidr"],
         "iface": ctx["iface"],
-        "hosts": len(neigh),
+        "via": net.get("via"),
+        "hosts": hosts,
         "mdns": len(mdns),
         "ssdp": len(ssdp),
         "ports_ok": svc is not None,

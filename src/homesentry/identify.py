@@ -114,6 +114,17 @@ def guess(
         offer("device_type", "nas", 0.6, "NAS-style name")
         if re.match(r"TNAS", names):
             offer("make", "TerraMaster", 0.6, "TNAS-* hostname")
+    # Apple devices publish their exact hardware model id in AirPlay/RAOP TXT (am= / model=)
+    for k in ("txt:_raop._tcp", "txt:_airplay._tcp"):
+        for txt in by.get(("mdns", k), []):
+            if (m := re.search(r'"(?:am|model)=([A-Za-z]+)(\d+,\d+)"', txt)) and (
+                hit := APPLE_MODELS.get(m.group(1))
+            ):
+                dtype, family = hit
+                ident = m.group(1) + m.group(2)
+                offer("make", "Apple", 0.8, "AirPlay model id")
+                offer("device_type", dtype, 0.8, f"AirPlay model id {ident}")
+                offer("model", APPLE_NAMES.get(ident, f"{family} ({ident})"), 0.75, "AirPlay model")
     # Macs advertise AirPlay receivers too (macOS 12+), so _raop alone would call them speakers.
     # The name a Mac publishes ("Victor's MacBook Pro", "Mac-mini.local") settles it.
     if m := re.search(
@@ -133,9 +144,13 @@ def guess(
     if any(re.search(r"\bRaspbian\b", p) for p in ports):
         offer("make", "Raspberry Pi", 0.5, "Raspbian service banner")
         offer("device_type", "computer", 0.5, "Raspbian service banner")
-    if "62078" in portnums:  # lockdownd: iPhone/iPad sync service
+    if "62078" in portnums:  # lockdownd: iPhone/iPad sync, but Apple TVs/HomePods run it too
         offer("make", "Apple", 0.55, "iOS sync port")
-        offer("device_type", "phone", 0.5, "iOS sync port")
+        offer("device_type", "phone", 0.4, "iOS sync port")
+    if any(re.search(r"\bAirTunes\b|Apple remote desktop", p) for p in ports):
+        offer("make", "Apple", 0.55, "Apple service banner")
+        if portnums & {"22", "5900", "445"}:
+            offer("device_type", "computer", 0.55, "Apple + ssh/vnc/smb")
     for p in ports:
         if m := re.search(r"\b(\w+) printer web interface", p):
             offer("make", m.group(1), 0.5, "printer web banner")
@@ -189,6 +204,30 @@ def guess(
     g["reasons"] = reasons
     return g
 
+
+# Apple hardware model id prefix -> (device type, family). Generic, public naming.
+APPLE_MODELS = {
+    "Mac": ("computer", "Mac"),
+    "MacBookPro": ("computer", "MacBook Pro"),
+    "MacBookAir": ("computer", "MacBook Air"),
+    "MacBook": ("computer", "MacBook"),
+    "iMac": ("computer", "iMac"),
+    "Macmini": ("computer", "Mac mini"),
+    "MacPro": ("computer", "Mac Pro"),
+    "AppleTV": ("streaming", "Apple TV"),
+    "AudioAccessory": ("speaker", "HomePod"),
+    "iPhone": ("phone", "iPhone"),
+    "iPad": ("tablet", "iPad"),
+}
+APPLE_NAMES = {
+    "AppleTV5,3": "Apple TV HD",
+    "AppleTV6,2": "Apple TV 4K",
+    "AppleTV11,1": "Apple TV 4K (2nd gen)",
+    "AppleTV14,1": "Apple TV 4K (3rd gen)",
+    "AudioAccessory1,1": "HomePod",
+    "AudioAccessory5,1": "HomePod mini",
+    "AudioAccessory6,1": "HomePod (2nd gen)",
+}
 
 # hostname regex -> make, model (None = first capture group), type
 HOSTNAME_HINTS = [
