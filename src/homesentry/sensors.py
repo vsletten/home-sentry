@@ -151,6 +151,23 @@ def apple_ids(sightings) -> set[str]:
     return out
 
 
+GENERIC_HOSTS = re.compile(
+    r"^(android|iphone|ipad|localhost|esp[-_]?[0-9a-f]*|[0-9a-f-]{32,36}|[0-9a-f]{12,})(-\d+)?$",
+    re.I,
+)
+
+
+def mdns_hosts(sightings) -> set[str]:
+    """Distinctive `<name>.local` hosts (macOS makes them unique on a network by adding -2)."""
+    out = set()
+    for src, key, val in sightings:
+        if src == "mdns" and key == "host" and val.lower().endswith(".local"):
+            name = val[:-6].lower()
+            if name and not GENERIC_HOSTS.match(name):
+                out.add(name)
+    return out
+
+
 def same_box(mac_a: str, mac_b: str, window: int = 32) -> bool:
     """Two MACs that are one multi-port device: same vendor block and nearly consecutive.
     Routers allocate a run of addresses (LAN, WAN, each radio): Arista/Mojo uses ...:89:9f on
