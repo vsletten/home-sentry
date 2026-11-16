@@ -461,11 +461,23 @@ def test_doctor_flags_snap_nmap(home, monkeypatch):
     class P:
         stdout = "active\n"
 
-    rows = {
-        r["check"]: r
-        for r in doctor.checks(Store(home / "inventory.db"), runner=lambda *a, **k: P())
+    def rows():
+        st = Store(home / "inventory.db")
+        return {r["check"]: r for r in doctor.checks(st, runner=lambda *a, **k: P())}
+
+    # default: the built-in scanner; a snap nmap lying around is irrelevant
+    monkeypatch.delenv("HOMESENTRY_PORTSCAN", raising=False)
+    r = rows()
+    assert "tool nmap" not in r and r["port scanner"] == {
+        "check": "port scanner",
+        "status": "ok",
+        "msg": "built-in",
     }
-    assert rows["tool nmap"]["status"] == "fail" and "apt install nmap" in rows["tool nmap"]["msg"]
+    # asked for nmap, and it's a snap: that will fail inside the hardened units
+    monkeypatch.setenv("HOMESENTRY_PORTSCAN", "nmap")
+    monkeypatch.setattr(discover.shutil, "which", doctor.shutil.which)
+    r = rows()
+    assert r["tool nmap"]["status"] == "fail" and "apt install nmap" in r["tool nmap"]["msg"]
 
 
 def test_doctor_reports_and_fixes_data_dir_mode(home):
