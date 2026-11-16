@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hmac
+import os
 import re
 import threading
 import time
@@ -37,6 +39,7 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
     app.state.llm = llm or OllamaClient()
     app.state.scan = {"running": False, "log": [], "error": None}
     tpl = Jinja2Templates(env=ui.env())
+    install_session_auth(app, os.environ.get("HOMESENTRY_TOKEN") or None)
 
     def S() -> Store:
         return app.state.store
@@ -393,6 +396,36 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
             raise HTTPException(404)
         return FileResponse(p)
 
+    @app.get("/api/events")
+    def api_events(since: float = 0.0, min_severity: str = "medium"):
+        """New timeline events, for a desktop shell's native notifications (local only)."""
+        rank = SEV_RANK.get(min_severity, 2)
+        n = names()
+        evs = [
+            {
+                "id": e["id"],
+                "ts": e["ts"],
+                "kind": e["kind"],
+                "severity": e["severity"],
+                "title": e["title"],
+                "device": n.get(e["device_id"]) if e.get("device_id") else None,
+                "device_id": e.get("device_id"),
+            }
+            for e in S().events(since=since)
+            if SEV_RANK.get(e["severity"], 4) <= rank
+        ]
+        last = S().last_scan()
+        return JSONResponse(
+            {
+                "events": evs,
+                "now": time.time(),
+                "scanning": app.state.scan["running"],
+                "local_network_blocked": bool(
+                    last and (last.get("summary") or {}).get("local_network_blocked")
+                ),
+            }
+        )
+
     @app.get("/healthz")
     def healthz():
         last = S().last_scan()
@@ -412,6 +445,44 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         )
 
     return app
+
+
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+COOKIE = "hs_session"
+
+
+def install_session_auth(app: FastAPI, token: str | None) -> None:
+    """Desktop mode (HOMESENTRY_TOKEN set): the UI answers only the app that started it.
+
+    The shell opens /auth?token=...; we set an HttpOnly, SameSite=Strict cookie and every later
+    request must carry it (or `Authorization: Bearer`). Only loopback Host headers are
+    accepted, so a web page can't reach us through DNS rebinding. No token = appliance mode
+    (bound to a tailnet IP), unchanged.
+    """
+    if not token:
+        return
+
+    def ok(value: str | None) -> bool:
+        return bool(value) and hmac.compare_digest(value.encode(), token.encode())
+
+    @app.middleware("http")
+    async def gate(request: Request, call_next):
+        host = (request.headers.get("host") or "").rsplit(":", 1)[0]
+        if host not in LOCAL_HOSTS:
+            return HTMLResponse("Forbidden host", status_code=403)
+        if request.url.path == "/auth":
+            if not ok(request.query_params.get("token")):
+                return HTMLResponse("Bad or missing token", status_code=401)
+            resp = RedirectResponse(request.query_params.get("next") or "/", status_code=303)
+            resp.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
+            return resp
+        auth = request.headers.get("authorization", "")
+        bearer = auth[7:] if auth.lower().startswith("bearer ") else None
+        if not (ok(request.cookies.get(COOKIE)) or ok(bearer)):
+            return HTMLResponse(
+                "<h3>HomeSentry</h3><p>Open HomeSentry from its app icon.</p>", status_code=401
+            )
+        return await call_next(request)
 
 
 def _watch_cadence() -> str | None:

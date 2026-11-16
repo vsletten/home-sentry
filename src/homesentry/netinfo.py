@@ -13,6 +13,7 @@ every platform. Nothing here needs root.
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import json
 import re
@@ -126,6 +127,37 @@ def tailscale_cmd() -> list[str] | None:
         if app.exists():
             return [str(app)]
     return None
+
+
+# symbolic: EHOSTUNREACH is 65 on macOS but 113 on Linux
+BLOCKED_ERRNOS = {errno.EPERM, errno.EACCES, errno.EHOSTUNREACH}
+
+
+def local_network_blocked(gateway: str, connect=None) -> bool:
+    """macOS 15+ silently denies LAN traffic to apps without Local Network permission: sends to
+    LAN addresses fail at once with EHOSTUNREACH/EPERM while the internet still works. A scan
+    then 'finds' an empty house. Test the one LAN host that must answer: the gateway.
+    Other platforms have no such gate."""
+    if platform() != "darwin" or not gateway:
+        return False
+    import socket
+
+    def default_connect(port: int) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.5)
+            return s.connect_ex((gateway, port))
+
+    connect = connect or default_connect
+    codes = []
+    for port in (53, 80, 443):
+        try:
+            code = connect(port)
+        except OSError as e:
+            code = e.errno or -1
+        if code in (0, errno.ECONNREFUSED):
+            return False  # the gateway answered: we're allowed on the LAN
+        codes.append(code)
+    return all(c in BLOCKED_ERRNOS for c in codes)
 
 
 # ---- Linux ---------------------------------------------------------------------
