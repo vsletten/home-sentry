@@ -43,7 +43,7 @@ class FakeNet:
         monkeypatch.setattr(discover, "lan_context", lambda: ctx)
         monkeypatch.setattr(discover, "arp_sweep", lambda c, i: {ip: MACS[ip] for ip in self.up})
         monkeypatch.setattr(discover, "reverse_dns", lambda ips: {})
-        monkeypatch.setattr(discover, "mdns", lambda iface, seconds=8: {})
+        monkeypatch.setattr(discover, "mdns", lambda iface, seconds=8, local_ip=None: {})
         monkeypatch.setattr(discover, "ssdp", lambda seconds=4.0, local_ip=None: {})
         monkeypatch.setattr(discover, "service_scan", lambda ips, top_ports=100: self.svc)
         monkeypatch.setattr(discover, "tailscale_peers", lambda: self.peers)
@@ -78,13 +78,13 @@ def test_scan_pipeline_baseline_new_device_ports_findings_offline(home, monkeypa
     st.set_identity(nas["id"], {"label": "NAS", "device_type": "nas"}, "user", 1.0, True)
 
     net.up.add(NEWBIE)
-    net.svc = {NAS: [("nmap", "open_port", "2049/tcp nfs")]}
+    net.svc = {NAS: [("ports", "open_port", "2049/tcp nfs")]}
     s2 = scan(st, ports=True)  # first port scan = port baseline: no port events yet
     assert ("new_device", "New device joined the network") in kinds(s2)
     assert not [k for k, _ in kinds(s2) if k.startswith("port_")]
     assert ("finding_new", "New finding: NFS share reachable") in kinds(s2)
 
-    net.svc = {NAS: [("nmap", "open_port", "23/tcp telnet")]}
+    net.svc = {NAS: [("ports", "open_port", "23/tcp telnet")]}
     s3 = scan(st, ports=True)
     k3 = kinds(s3)
     assert ("port_opened", "Port 23/tcp opened") in k3

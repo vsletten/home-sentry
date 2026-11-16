@@ -1,4 +1,5 @@
-"""homesentry scan | list | threats | gateway | outside | watch | plan | report | doctor | serve"""
+"""homesentry scan | list | threats | gateway | outside | watch | plan | report | doctor | serve
+| probe | compare"""
 
 from __future__ import annotations
 
@@ -13,7 +14,9 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="homesentry")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("scan", help="discover devices on the LAN")
-    s.add_argument("--ports", action="store_true", help="also run an nmap service scan (slower)")
+    s.add_argument(
+        "--ports", action="store_true", help="also scan ports and identify services (slower)"
+    )
     sub.add_parser("list", help="print the inventory")
     sub.add_parser("threats", help="re-run the threat pass on the current inventory")
     sub.add_parser("gateway", help="read the gateway admin pages (read-only) and summarize")
@@ -27,6 +30,13 @@ def main(argv: list[str] | None = None) -> None:
     r = sub.add_parser("report", help="write the household security report (HTML)")
     r.add_argument("-o", "--out", default="homesentry-report.html")
     sub.add_parser("doctor", help="health checks (tools, configs, scans, units)")
+    pr = sub.add_parser("probe", help="run every collector, store nothing, print what this sees")
+    pr.add_argument("--ports", action="store_true", help="also scan ports and identify services")
+    pr.add_argument("--json", action="store_true", help="machine-readable output")
+    pr.add_argument("--mdns-seconds", type=float, default=8.0)
+    cp = sub.add_parser("compare", help="diff a probe (from another machine) against the inventory")
+    cp.add_argument("probe_json", help="output of `homesentry probe --json` ('-' for stdin)")
+    cp.add_argument("--json", action="store_true")
     v = sub.add_parser("serve", help="run the web UI")
     v.add_argument(
         "--host",
@@ -36,7 +46,35 @@ def main(argv: list[str] | None = None) -> None:
     v.add_argument("--port", type=int, default=8720)
     a = ap.parse_args(argv)
 
+    if a.cmd == "probe":  # before the Store: a probe on a build/test machine creates no inventory
+        import json
+
+        from . import probe
+
+        got = probe.collect(ports=a.ports, mdns_seconds=a.mdns_seconds)
+        if a.json:
+            print(json.dumps(got, indent=1))
+        else:
+            for n in got["networks"]:
+                print(f"{n['cidr']} on {n['iface']} via {n['gateway'] or '?'}: {n['counts']}")
+                for ip, h in n["hosts"].items():
+                    print(f"  {ip:<15} {h['vendor'] or '?':<28} {len(h['sightings'])} sightings")
+            for k, v in got["errors"].items():
+                print(f"ERROR {k}: {v}")
+            print(f"timings: {got['timings']}  total {got['seconds']}s")
+        raise SystemExit(1 if got["errors"] else 0)
+
     store = Store(data_dir() / "inventory.db")
+    if a.cmd == "compare":
+        import json
+        import sys
+
+        from . import probe
+
+        src = sys.stdin if a.probe_json == "-" else open(a.probe_json)  # noqa: SIM115
+        rep = probe.compare(json.load(src), store)
+        print(json.dumps(rep, indent=1) if a.json else probe.render(rep))
+        return
     if a.cmd == "scan":
         from .scan import run_scan
 

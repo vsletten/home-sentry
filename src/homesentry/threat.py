@@ -92,7 +92,7 @@ def components(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Software+version seen in banners. One entry per (name, version)."""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     for e in evidence:
-        if (e["source"], e["key"]) not in {("nmap", "open_port"), ("ssdp", "server")}:
+        if (e["source"], e["key"]) not in {("ports", "open_port"), ("ssdp", "server")}:
             continue
         text = e["value"]
         for rx, name, cpes in SOFTWARE:
@@ -230,7 +230,7 @@ def assess_device(
     ports = {
         e["value"].split("/")[0]: e["value"]
         for e in evidence
-        if e["source"] == "nmap" and e["key"] == "open_port"
+        if e["source"] == "ports" and e["key"] == "open_port"
     }
     for port, (sev, title, why) in EXPOSURE.items():
         if port in ports:

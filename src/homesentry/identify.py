@@ -116,7 +116,7 @@ def guess(
             offer("make", "TerraMaster", 0.6, "TNAS-* hostname")
 
     # 4. Open ports / service banners
-    ports = by.get(("nmap", "open_port"), [])
+    ports = by.get(("ports", "open_port"), [])
     portnums = {p.split("/")[0] for p in ports}
     if portnums & {"631", "9100", "515"}:
         offer("device_type", "printer", 0.55, "printer ports")
@@ -126,7 +126,7 @@ def guess(
             offer("device_type", "printer", 0.6, "printer web banner")
 
     # 5. Web admin page title
-    for title in by.get(("nmap", "http_title"), []):
+    for title in by.get(("ports", "http_title"), []):
         offer("make", _vendor_in(title), 0.4, "HTTP title")
 
     # 6. Tailscale peer: the node's own name and OS

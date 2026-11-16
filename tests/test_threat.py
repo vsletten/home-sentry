@@ -37,10 +37,10 @@ def test_vkey_orders_openssh_style_versions():
 def test_components_from_banners():
     comps = threat.components(
         ev(
-            ("nmap", "open_port", "22/tcp ssh OpenSSH 8.8 protocol 2.0"),
-            ("nmap", "open_port", "22/tcp ssh OpenSSH 9.6p1 Ubuntu 3ubuntu13.20 Ubuntu Linux"),
-            ("nmap", "open_port", "53/tcp domain dnsmasq 2.83"),
-            ("nmap", "open_port", "139/tcp netbios-ssn Samba smbd 3.X - 4.X workgroup: W"),
+            ("ports", "open_port", "22/tcp ssh OpenSSH 8.8 protocol 2.0"),
+            ("ports", "open_port", "22/tcp ssh OpenSSH 9.6p1 Ubuntu 3ubuntu13.20 Ubuntu Linux"),
+            ("ports", "open_port", "53/tcp domain dnsmasq 2.83"),
+            ("ports", "open_port", "139/tcp netbios-ssn Samba smbd 3.X - 4.X workgroup: W"),
             ("ssdp", "server", "Linux/2.6.18.8-Pace-1.318.2.x, UPnP/1.0 DIRECTV JHUPnP/1.0"),
         )
     )
@@ -81,8 +81,8 @@ def test_kernel_eol():
 
 def test_assess_device_severity_rules():
     evidence = ev(
-        ("nmap", "open_port", "23/tcp telnet BusyBox telnetd"),
-        ("nmap", "open_port", "22/tcp ssh OpenSSH 8.8 protocol 2.0"),
+        ("ports", "open_port", "23/tcp telnet BusyBox telnetd"),
+        ("ports", "open_port", "22/tcp ssh OpenSSH 8.8 protocol 2.0"),
         ("ssdp", "server", "Linux/2.6.18 UPnP/1.0"),
     )
     nvd = {
@@ -105,8 +105,8 @@ def test_assess_device_severity_rules():
 
 def test_remote_access_on_own_computer_is_info_and_distro_ssh_is_info():
     evidence = ev(
-        ("nmap", "open_port", "5900/tcp vnc Apple remote desktop vnc"),
-        ("nmap", "open_port", "22/tcp ssh OpenSSH 9.6p1 Ubuntu 3ubuntu13.20"),
+        ("ports", "open_port", "5900/tcp vnc Apple remote desktop vnc"),
+        ("ports", "open_port", "22/tcp ssh OpenSSH 9.6p1 Ubuntu 3ubuntu13.20"),
     )
     nvd = {("openbsd", "openssh"): [cve("CVE-X", 9.8, cm(SSH, versionEndExcluding="9.8"))]}
     fs = threat.assess_device({"device_type": "computer"}, evidence, {}, nvd, [])
@@ -183,7 +183,7 @@ def test_store_migrates_v0_database(tmp_path):
 
 
 def test_kev_on_own_computer_caps_at_medium_with_kev_note():
-    evidence = ev(("nmap", "open_port", "22/tcp ssh OpenSSH 10.3 protocol 2.0"))
+    evidence = ev(("ports", "open_port", "22/tcp ssh OpenSSH 10.3 protocol 2.0"))
     nvd = {("openbsd", "openssh"): [cve("CVE-K", 8.1, cm(SSH, versionEndExcluding="10.6"))]}
     kev = {"CVE-K": {"dateAdded": "2026-11-09", "vulnerabilityName": "OpenSSH bug"}}
     pc = threat.assess_device({"device_type": "computer"}, evidence, kev, nvd, [])

@@ -75,6 +75,14 @@ class Store:
         if "online" not in cols:  # v2: answered in the most recent scan (NULL = never scanned)
             self.db.execute("ALTER TABLE devices ADD COLUMN online INTEGER")
             self.db.commit()
+        # v3: port evidence is named for what it is, not for the tool that once produced it
+        # (the built-in scanner replaced nmap). Idempotent; a no-op once migrated.
+        self.db.execute("UPDATE evidence SET source='ports' WHERE source='nmap'")
+        # v3: Apple companion-link TXT rotates its ids; old scans stored one row per rotation
+        self.db.execute(
+            "DELETE FROM evidence WHERE source='mdns' AND key='txt:_companion-link._tcp'"
+        )
+        self.db.commit()
 
     # ---- devices -------------------------------------------------------
     def upsert_seen(
