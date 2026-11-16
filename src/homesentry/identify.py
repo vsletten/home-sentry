@@ -114,19 +114,35 @@ def guess(
         offer("device_type", "nas", 0.6, "NAS-style name")
         if re.match(r"TNAS", names):
             offer("make", "TerraMaster", 0.6, "TNAS-* hostname")
+    # Macs advertise AirPlay receivers too (macOS 12+), so _raop alone would call them speakers.
+    # The name a Mac publishes ("Victor's MacBook Pro", "Mac-mini.local") settles it.
+    if m := re.search(
+        r"\b(MacBook(?: Pro| Air)?|Mac[ -]mini|iMac|Mac[ -]Pro|Mac[ -]Studio)\b", names
+    ):
+        offer("make", "Apple", 0.6, "Mac name")
+        offer("device_type", "computer", 0.6, f"mDNS name {m.group(1)}")
+    elif re.search(r"\b(iPhone|iPad)\b", names):
+        offer("make", "Apple", 0.6, "iPhone/iPad name")
+        offer("device_type", "phone", 0.55, "iPhone/iPad name")
 
     # 4. Open ports / service banners
-    ports = by.get(("nmap", "open_port"), [])
+    ports = by.get(("ports", "open_port"), [])
     portnums = {p.split("/")[0] for p in ports}
     if portnums & {"631", "9100", "515"}:
         offer("device_type", "printer", 0.55, "printer ports")
+    if any(re.search(r"\bRaspbian\b", p) for p in ports):
+        offer("make", "Raspberry Pi", 0.5, "Raspbian service banner")
+        offer("device_type", "computer", 0.5, "Raspbian service banner")
+    if "62078" in portnums:  # lockdownd: iPhone/iPad sync service
+        offer("make", "Apple", 0.55, "iOS sync port")
+        offer("device_type", "phone", 0.5, "iOS sync port")
     for p in ports:
         if m := re.search(r"\b(\w+) printer web interface", p):
             offer("make", m.group(1), 0.5, "printer web banner")
             offer("device_type", "printer", 0.6, "printer web banner")
 
     # 5. Web admin page title
-    for title in by.get(("nmap", "http_title"), []):
+    for title in by.get(("ports", "http_title"), []):
         offer("make", _vendor_in(title), 0.4, "HTTP title")
 
     # 6. Tailscale peer: the node's own name and OS

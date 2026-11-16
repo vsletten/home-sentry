@@ -11,12 +11,13 @@ the MAC *vendor* only, never MACs, IPs or serials. UPnP serial numbers are never
 ## Shape
 
 ```
-discover (ARP sweep · mDNS · SSDP/UPnP · nmap -sV · gateway reader · tailscale, unprivileged)
+discover (ARP sweep · mDNS · SSDP/UPnP · port/service scan · gateway reader · tailscale;
+          unprivileged, built in: no nmap, no avahi; Linux + macOS)
    → evidence (SQLite)
    → identify (deterministic rules + learned KB)        ← no LLM, free, instant
    → wizard  (photo → vision reader → transcript; glm-5.3 reasons)  ← what rules can't pin
    → confirm (locks identity, teaches the KB)
-   → threats (exposure rules · EOL kernels · CVE leads: NVD per product + CISA KEV)
+   → threats (exposure rules · EOL kernels + OS releases · CVE leads: NVD + CISA KEV)
    → watch   (snapshot before/after every scan → diff → timeline events → optional push)
    → plan    (posture score 0-100 · findings → playbooks → actions ranked by gain/minute)
    → ask     (household analyst over the whole picture, devices as opaque handles)
@@ -35,7 +36,7 @@ discover (ARP sweep · mDNS · SSDP/UPnP · nmap -sV · gateway reader · tailsc
 **Monitoring.** `homesentry watch` is one tick: quick scan always, port scan every 12h,
 gateway read every 6h, outside-in every 24h (each only if configured). Every scan diffs a
 before/after snapshot into the timeline. The first port scan of a device is a baseline (no
-"port opened" storm), a failed nmap is never read as "everything closed", and only
+"port opened" storm), a failed port scan is never read as "everything closed", and only
 infrastructure (gateway, NAS, APs...) going offline is news: laptops sleeping isn't.
 A file lock keeps the timer and the Scan button from racing.
 
@@ -89,7 +90,36 @@ ever talk on the LAN again.
 
 **Multiple networks:** every physical interface with an RFC 1918 address is scanned
 (USB-Ethernet into a mesh router, a Wi-Fi card, ...). Tailscale peers with a direct LAN
-path add device names and OS.
+path add device names and OS. A machine on both the wired LAN and a Wi-Fi network that a
+router NATs sees both: that is how the hidden Wi-Fi side of a double NAT gets inventoried.
+
+## Platforms
+
+Linux and macOS today (Windows next). Everything OS-specific about reading the network is in
+`netinfo.py` (Linux: `ip -j` + `/sys`; macOS: `route`, `ifconfig`, `arp`, `ipconfig`), behind
+pure parsers that are tested on every OS. The rest is the same Python everywhere:
+
+| Collector | How | Notes |
+|---|---|---|
+| ARP sweep | one empty UDP datagram per address, then the OS neighbor table | no root, no nmap |
+| mDNS | python-zeroconf, shares UDP 5353 with avahi / mDNSResponder | avahi only as fallback |
+| Ports | `portscan.py`: asyncio connects + read-only protocol probes | see below |
+| MAC vendors | bundled IEEE MA-L table (`scripts/build_oui.py`) | same names on every OS |
+
+**The port scanner** connects to ~140 home-relevant TCP ports (a superset of the classic
+top-100), at most 12 at a time per host (a 2007 set-top box drops ports at 24), and retries
+timeouts by how the host behaves (a mostly-refusing host gets every timeout retried; a
+filtering one only the common ports). Then it identifies what answered: SSH greeting, HTTP
+`Server`/title (and error-page signatures), TLS, DNS `version.bind`, SMB1 session setup
+(real Samba versions where nmap says "3.X - 4.X"), AFP status, RTSP, VNC, MySQL. Output uses
+nmap's product naming, so CVE matching reads the same either way. It **never sends a byte to
+raw-print ports** (9100-9107, LPD 515): anything sent there comes out of the printer.
+`HOMESENTRY_PORTSCAN=nmap` switches to `nmap -sT -sV` if you prefer it.
+
+**Checking another machine's view:** `homesentry probe [--ports] [--json]` runs every
+collector and stores nothing. `scripts/remote-test.sh <ssh-host> [--ports]` syncs this tree to
+a machine you own, runs the tests and a live probe there, and `homesentry compare` diffs the
+result against the local inventory (from a backup copy) as the answer key.
 
 The KB (`src/homesentry/kbdata/devices/*.yaml` seed + `~/.local/share/homesentry/kb/` learned) holds generic
 device knowledge only, so the next device of the same model is recognized automatically.
@@ -98,7 +128,8 @@ device knowledge only, so the next device of the same model is recognized automa
 
 ```bash
 uv sync -p 3.13
-.venv/bin/homesentry scan            # ~10s; add --ports for an nmap service scan (~90s)
+.venv/bin/homesentry scan            # ~20s; add --ports for the port/service scan (~45s)
+.venv/bin/homesentry probe --ports   # what this machine sees, stored nowhere
 .venv/bin/homesentry list
 .venv/bin/homesentry threats        # re-run the threat pass (cached intel, ~2s)
 .venv/bin/homesentry plan           # score + ranked actions in the terminal
@@ -120,9 +151,9 @@ loginctl enable-linger "$USER"     # keep running without a login session
 homesentry doctor
 ```
 
-Use the **distro nmap** (`apt install nmap`), not the snap: the units are sandboxed
-(`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`) and snap's launcher refuses to run
-under any of them, so every port scan would fail (safely: old port evidence is kept).
+No nmap needed. If you opt in to it (`HOMESENTRY_PORTSCAN=nmap`), use the **distro nmap**
+(`apt install nmap`), not the snap: the units are sandboxed (`NoNewPrivileges`,
+`ProtectSystem=strict`, `PrivateTmp`) and snap's launcher refuses to run under any of them.
 `homesentry doctor` flags it.
 
 The UI binds `$HOMESENTRY_BIND` (loopback if unset, never all interfaces) and has no login:
@@ -150,7 +181,7 @@ because devices answer multicast probes by unicast from addresses the firewall n
   Device-description fetches only follow a `LOCATION` on the responding device's own private IP.
 - **mDNS:** allow `5353/udp` in from the LAN, and replies *from* port 5353.
 
-Port scans use `nmap -sT` (full connects), which conntrack tracks, so they need no rule.
+Port scans are full TCP connects, which conntrack tracks, so they need no rule.
 
 ## Tests
 

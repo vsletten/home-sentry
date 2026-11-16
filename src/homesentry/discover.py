@@ -1,6 +1,7 @@
-"""Unprivileged LAN discovery: ARP sweep, mDNS, SSDP/UPnP, optional nmap service scan.
+"""Unprivileged LAN discovery: ARP sweep, mDNS, SSDP/UPnP, optional port/service scan.
 
-Each collector returns {ip: [(source, key, value), ...]}. No root required.
+Each collector returns {ip: [(source, key, value), ...]}. No root, no nmap, no avahi: the
+OS-specific reads are in netinfo, ports in portscan, mDNS in mdns. Linux and macOS today.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from pathlib import Path
 
 import httpx
 
+from . import netinfo
+
 Sighting = tuple[str, str, str]
 
 OUI_PATHS = [
@@ -27,70 +30,25 @@ OUI_PATHS = [
 ]
 
 
-# ---- network context ---------------------------------------------------------
+# ---- network context (OS-specific reads live in netinfo) -----------------------
+from .netinfo import RFC1918, VIRTUAL_IFACE, is_lan_ip, norm_mac  # noqa: E402,F401  re-exported
+
+
 def lan_context() -> dict[str, str]:
     """Interface, local IP/MAC, CIDR and gateway of the default route."""
-    routes = json.loads(_run(["ip", "-j", "route", "show", "default"]) or "[]")
-    if not routes:
-        raise RuntimeError("no default route")
-    iface, gateway = routes[0]["dev"], routes[0].get("gateway", "")
-    addrs = json.loads(_run(["ip", "-j", "-4", "addr", "show", "dev", iface]) or "[]")
-    info = addrs[0]["addr_info"][0]
-    net = ipaddress.ip_interface(f"{info['local']}/{info['prefixlen']}").network
-    mac = Path(f"/sys/class/net/{iface}/address").read_text().strip()
-    return {
-        "iface": iface,
-        "local_ip": info["local"],
-        "cidr": str(net),
-        "gateway": gateway,
-        "mac": mac,
-    }
-
-
-VIRTUAL_IFACE = ("lo", "docker", "br-", "veth", "tailscale", "virbr", "tun", "wg", "zt")
-RFC1918 = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
-
-
-def is_lan_ip(ip: str) -> bool:
-    """Home-LAN address (RFC 1918). Stricter than ipaddress.is_private, which also says yes to
-    documentation and other reserved ranges."""
-    try:
-        a = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return a.version == 4 and any(a in n for n in RFC1918)
+    return netinfo.lan_context()
 
 
 def lan_contexts() -> list[dict[str, str]]:
     """Every physical interface with a private IPv4: the default-route LAN first, then any
-    extra legs (a USB-Ethernet into the eero, a Wi-Fi card, ...). Each is scanned."""
-    out = [lan_context()]
-    addrs = json.loads(_run(["ip", "-j", "-4", "addr", "show"]) or "[]")
-    for a in addrs:
-        iface = a.get("ifname", "")
-        if iface == out[0]["iface"] or iface.startswith(VIRTUAL_IFACE):
-            continue
-        for info in a.get("addr_info", []):
-            if not is_lan_ip(info["local"]):
-                continue
-            net = ipaddress.ip_interface(f"{info['local']}/{info['prefixlen']}").network
-            gw = (_run(["nmcli", "-g", "IP4.GATEWAY", "device", "show", iface]) or "").strip()
-            mac_p = Path(f"/sys/class/net/{iface}/address")
-            out.append(
-                {
-                    "iface": iface,
-                    "local_ip": info["local"],
-                    "cidr": str(net),
-                    "gateway": gw,
-                    "mac": mac_p.read_text().strip() if mac_p.exists() else "",
-                }
-            )
-    return out
+    extra legs (a USB-Ethernet into a second router, a Wi-Fi card, ...). Each is scanned."""
+    return netinfo.lan_contexts()
 
 
 def tailscale_peers() -> dict[str, list[Sighting]]:
     """Tailscale peers with a direct LAN connection reveal the device's name and OS."""
-    js = _run(["tailscale", "status", "--json"])
+    cmd = netinfo.tailscale_cmd()
+    js = _run([*cmd, "status", "--json"]) if cmd else None
     return parse_tailscale(js or "{}")
 
 
@@ -166,17 +124,33 @@ def attribute_tailscale(
 
 
 # ---- OUI ---------------------------------------------------------------------
+# The bundled IEEE MA-L table (scripts/build_oui.py) is THE vendor source on every OS, so a Mac
+# and a Linux box name the same NIC the same way. nmap's table only fills prefixes the bundle
+# lacks (none, in practice, when the bundle is fresh).
+BUNDLED_OUI = Path(__file__).parent / "kbdata" / "oui.tsv.gz"
 _oui: dict[str, str] | None = None
+
+
+def load_oui() -> dict[str, str]:
+    import gzip
+
+    table: dict[str, str] = {}
+    for p in OUI_PATHS:
+        if p.exists():
+            table.update(parse_oui(p.read_text(errors="ignore")))
+            break
+    if BUNDLED_OUI.exists():
+        for line in gzip.decompress(BUNDLED_OUI.read_bytes()).decode().splitlines():
+            prefix, _, vendor = line.partition("\t")
+            if vendor:
+                table[prefix] = vendor
+    return table
 
 
 def oui_vendor(mac: str) -> str | None:
     global _oui
     if _oui is None:
-        _oui = {}
-        for p in OUI_PATHS:
-            if p.exists():
-                _oui = parse_oui(p.read_text(errors="ignore"))
-                break
+        _oui = load_oui()
     return _oui.get(mac.replace(":", "").upper()[:6])
 
 
@@ -197,31 +171,47 @@ def is_random_mac(mac: str) -> bool:
 
 
 # ---- ARP ---------------------------------------------------------------------
-def arp_sweep(cidr: str, iface: str) -> dict[str, str]:
-    """Poke every address so the kernel ARP-resolves it, then read the neighbor table.
-    Returns {ip: mac}. ARP resolution itself proves presence, even for hosts that drop pings."""
-    nmap = shutil.which("nmap")
-    if nmap:
-        _run([nmap, "-sn", "-n", "-T4", cidr], timeout=120)
-    else:  # crude fallback: UDP connect to every host triggers ARP
-        net = ipaddress.ip_network(cidr)
-        for host in net.hosts():
+SWEEP_MAX_HOSTS = 4096  # a /20; bigger "home" networks are misconfigured or not a home
+
+
+def arp_sweep(cidr: str, iface: str, rounds: int = 2) -> dict[str, str]:
+    """Poke every address so the OS ARP-resolves it, then read the neighbor table.
+    Returns {ip: mac}. ARP resolution itself proves presence, even for hosts that drop pings.
+
+    The poke is one empty UDP datagram to the discard port: unprivileged, the same on every OS,
+    and the kernel must ARP before it can send it. Two rounds catch hosts that miss the first
+    (Wi-Fi power save, ARP queue limits on big subnets). No nmap needed."""
+    net = ipaddress.ip_network(cidr, strict=False)
+    hosts = [str(h) for h in net.hosts()][:SWEEP_MAX_HOSTS]
+    for _ in range(rounds):
+        poke(hosts)
+        time.sleep(1.5)
+    # only this network's addresses: macOS keeps link-local (169.254/16) entries for devices
+    # that failed DHCP on the same interface, and those would rename a known device's IP
+    return {ip: mac for ip, mac in netinfo.neighbors(iface).items() if _in(ip, net)}
+
+
+def _in(ip: str, net) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in net
+    except ValueError:
+        return False
+
+
+def poke(hosts: list[str]) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setblocking(False)
+        for i, host in enumerate(hosts):
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                    s.sendto(b"", (str(host), 9))
-            except OSError:
-                pass
-        time.sleep(3)
-    return parse_neigh(_run(["ip", "-j", "neigh", "show", "dev", iface]) or "[]")
+                s.sendto(b"", (host, 9))
+            except OSError:  # EHOSTDOWN/ENOBUFS on macOS once its ARP queue is full: pace it
+                time.sleep(0.01)
+            if i % 64 == 63:
+                time.sleep(0.005)
 
 
 def parse_neigh(js: str) -> dict[str, str]:
-    out = {}
-    for n in json.loads(js):
-        state = n.get("state") or []
-        if n.get("lladdr") and "FAILED" not in state and ":" not in n["dst"]:
-            out[n["dst"]] = n["lladdr"].lower()
-    return out
+    return netinfo.parse_ip_neigh(js)
 
 
 def reverse_dns(ips: list[str]) -> dict[str, str]:
@@ -231,12 +221,20 @@ def reverse_dns(ips: list[str]) -> dict[str, str]:
         except OSError:
             return ip, None
 
-    with ThreadPoolExecutor(16) as ex:
+    # gethostbyaddr has no timeout knob and macOS waits ~5s per address with no PTR record:
+    # one thread per address bounds the whole pass at one timeout
+    with ThreadPoolExecutor(max(16, min(len(ips), 256))) as ex:
         return {ip: h for ip, h in ex.map(one, ips) if h}
 
 
 # ---- mDNS --------------------------------------------------------------------
-def mdns(iface: str, seconds: int = 8) -> dict[str, list[Sighting]]:
+def mdns(iface: str, seconds: int = 8, local_ip: str | None = None) -> dict[str, list[Sighting]]:
+    """Pure-Python mDNS (zeroconf) on every OS; avahi-browse only if zeroconf can't run."""
+    from . import mdns as mdnslib
+
+    got = mdnslib.browse(local_ip, seconds)
+    if got is not None:
+        return got
     if not shutil.which("avahi-browse"):
         return {}
     out = _run(
@@ -262,7 +260,7 @@ def parse_avahi(text: str, iface: str) -> dict[str, list[Sighting]]:
         s.add(("mdns", "name", name))
         s.add(("mdns", "host", host))
         txt = ";".join(f[9:]).strip()
-        if txt:
+        if txt and stype != "_companion-link._tcp":  # rotating ids: bloat, identifies nothing
             s.add(("mdns", f"txt:{stype}", _avahi_unescape(txt)[:400]))
     return {ip: sorted(v) for ip, v in res.items()}
 
@@ -403,9 +401,28 @@ def parse_upnp_description(xml: str) -> set[Sighting]:
     return out
 
 
-# ---- nmap service scan (optional, slower) ------------------------------------
+# ---- port / service scan (optional, slower) ------------------------------------
+PORT_SRC = "ports"  # evidence source for open ports, whichever engine found them
+
+
+def port_engine() -> str:
+    """'native' (built in, every OS) unless HOMESENTRY_PORTSCAN=nmap asks for nmap -sV."""
+    want = os.environ.get("HOMESENTRY_PORTSCAN", "native").strip().lower()
+    return "nmap" if want == "nmap" and shutil.which("nmap") else "native"
+
+
 def service_scan(ips: list[str], top_ports: int = 100) -> dict[str, list[Sighting]] | None:
     """Open ports + versions per host. None if the scan didn't run (vs {} = nothing open)."""
+    if not ips:
+        return None
+    if port_engine() == "native":
+        from . import portscan
+
+        return portscan.scan(ips)
+    return nmap_scan(ips, top_ports)
+
+
+def nmap_scan(ips: list[str], top_ports: int = 100) -> dict[str, list[Sighting]] | None:
     nmap = shutil.which("nmap")
     if not nmap or not ips:
         return None
@@ -458,11 +475,11 @@ def parse_nmap_xml(xml: str) -> dict[str, list[Sighting]]:
                     svc.get("extrainfo"),
                 ]
                 desc += " " + " ".join(p for p in parts if p)
-            sights.append(("nmap", "open_port", desc.strip()))
+            sights.append((PORT_SRC, "open_port", desc.strip()))
             for sc in port.findall("script[@id='http-title']"):
                 title = (sc.get("output") or "").strip()
                 if title and not title.startswith(("Site doesn't have", "Did not follow")):
-                    sights.append(("nmap", "http_title", title[:200]))
+                    sights.append((PORT_SRC, "http_title", title[:200]))
         if sights:
             res[ip] = sights
     return res

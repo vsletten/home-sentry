@@ -79,13 +79,18 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
         neigh[ctx["local_ip"]] = ctx["mac"]
     log(f"  ARP: {len(neigh)} hosts")
     names = discover.reverse_dns(list(neigh))
-    mdns = discover.mdns(ctx["iface"])
+    mdns = discover.mdns(ctx["iface"], local_ip=ctx["local_ip"])
     log(f"  mDNS: {len(mdns)} hosts advertising")
     ssdp = discover.ssdp(local_ip=ctx["local_ip"])
     log(f"  SSDP/UPnP: {len(ssdp)} hosts")
     svc = discover.service_scan(list(neigh)) if ports else None
     if ports:
-        log(f"  nmap: {len(svc)} hosts with open ports" if svc is not None else "  nmap: failed")
+        eng = discover.port_engine()
+        log(
+            f"  ports ({eng}): {len(svc)} hosts with open ports"
+            if svc is not None
+            else f"  ports ({eng}): failed"
+        )
 
     for ip, mac in neigh.items():
         vendor = discover.oui_vendor(mac)
@@ -104,8 +109,8 @@ def _scan_network(store, ctx, peers, entries, ports, log) -> dict[str, Any]:
             # no live sighting this time, but what we know now clears an old NAT verdict
             store.delete_evidence(did, "tailscale", "nat_for")
         if svc is not None:  # fresh port view: ports that closed must disappear
-            store.clear_evidence(did, "nmap")
-            store.add_evidence(did, "nmap", "scanned", "yes")
+            store.clear_evidence(did, "ports")
+            store.add_evidence(did, "ports", "scanned", "yes")
         sightings = mdns.get(ip, []) + ssdp.get(ip, []) + (svc or {}).get(ip, []) + ts
         for src, key, val in sightings:
             if val:

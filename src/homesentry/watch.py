@@ -83,10 +83,12 @@ def snapshot(store: Store) -> dict[str, Any]:
             {
                 e["value"].split(" ")[0]
                 for e in ev
-                if e["source"] == "nmap" and e["key"] == "open_port"
+                if e["source"] == "ports" and e["key"] == "open_port"
             }
         )
-        snap["port_scanned"][did] = any(e["source"] == "nmap" and e["key"] == "scanned" for e in ev)
+        snap["port_scanned"][did] = any(
+            e["source"] == "ports" and e["key"] == "scanned" for e in ev
+        )
     for f in store.findings():
         snap["findings"][f"{f['device_id']}|{finding_key(f)}"] = {
             "device_id": f["device_id"],

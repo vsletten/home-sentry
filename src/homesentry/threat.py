@@ -39,6 +39,50 @@ SOFTWARE: list[tuple[str, str, list[tuple[str, str]]]] = [
 ]
 DISTRO_MARK = re.compile(r"\b(ubuntu|debian|raspbian|fedora|red ?hat|el\d)\b", re.I)
 KERNEL_RE = re.compile(r"\bLinux[/ ](\d+\.\d+(?:\.\d+)*)")
+# Debian-family package suffix in a service banner: "OpenSSH_7.9p1 Raspbian-10+deb10u1" ->
+# Debian 10. The suffix names the OS release the package was built for, so it dates the whole
+# OS, not just the one daemon.
+DEBIAN_RE = re.compile(r"\+deb(\d{1,2})u\d+")
+DEBIAN_NAMES = {
+    "7": "Wheezy", "8": "Jessie", "9": "Stretch", "10": "Buster", "11": "Bullseye",
+    "12": "Bookworm", "13": "Trixie",
+}  # fmt: skip
+
+
+def os_releases(evidence: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Distro releases dated by package suffixes in banners, one per (distro, release)."""
+    seen: dict[tuple[str, str], dict[str, str]] = {}
+    for e in evidence:
+        if (e["source"], e["key"]) != ("ports", "open_port"):
+            continue
+        if m := DEBIAN_RE.search(e["value"]):
+            rel = m.group(1)
+            flavor = "Raspbian" if re.search(r"raspbian", e["value"], re.I) else "Debian"
+            name = DEBIAN_NAMES.get(rel)
+            seen.setdefault(
+                ("debian", rel),
+                {
+                    "product": "debian",
+                    "cycle": rel,
+                    "label": f"{flavor} {rel}" + (f" ({name})" if name else ""),
+                    "where": e["value"][:80],
+                },
+            )
+    return list(seen.values())
+
+
+def os_eol(rel: dict[str, str], cycles: list[dict[str, Any]], today: dt.date | None = None):
+    """'security updates ended on <date>' for a release past its (free) EOL, else None.
+    Paid extended support (ELTS) doesn't count: a household doesn't have it."""
+    today = today or dt.date.today()
+    for c in cycles:
+        if str(c.get("cycle")) == rel["cycle"]:
+            eol = c.get("eol")
+            if isinstance(eol, str) and dt.date.fromisoformat(eol) < today:
+                return eol
+            return None
+    return None
+
 
 # port -> (severity, title, why)
 EXPOSURE: dict[str, tuple[str, str, str]] = {
@@ -92,7 +136,7 @@ def components(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Software+version seen in banners. One entry per (name, version)."""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     for e in evidence:
-        if (e["source"], e["key"]) not in {("nmap", "open_port"), ("ssdp", "server")}:
+        if (e["source"], e["key"]) not in {("ports", "open_port"), ("ssdp", "server")}:
             continue
         text = e["value"]
         for rx, name, cpes in SOFTWARE:
@@ -223,6 +267,7 @@ def assess_device(
     kev: dict[str, Any],
     nvd: dict[tuple[str, str], list[dict[str, Any]]],
     kernel_cycles: list[dict[str, Any]],
+    os_cycles: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     dtype = device.get("device_type") or ""
@@ -230,7 +275,7 @@ def assess_device(
     ports = {
         e["value"].split("/")[0]: e["value"]
         for e in evidence
-        if e["source"] == "nmap" and e["key"] == "open_port"
+        if e["source"] == "ports" and e["key"] == "open_port"
     }
     for port, (sev, title, why) in EXPOSURE.items():
         if port in ports:
@@ -243,6 +288,20 @@ def assess_device(
                     "title": title,
                     "detail": why,
                     "data": {"port": ports[port]},
+                }
+            )
+
+    for rel in os_releases(evidence):
+        if eol := os_eol(rel, (os_cycles or {}).get(rel["product"], [])):
+            findings.append(
+                {
+                    "severity": "high",
+                    "kind": "eol",
+                    "title": f"End-of-life operating system: {rel['label']}",
+                    "detail": f"Security updates for this OS release ended on {eol}. Every "
+                    "service it runs (SSH, web server, ...) stopped getting fixes then. "
+                    "Upgrade to a current release, or retire the device.",
+                    "data": {"where": rel["where"], "eol": eol},
                 }
             )
 
@@ -352,9 +411,11 @@ def run(store: Store, log=print) -> dict[str, Any]:
     log(f"CISA KEV: {len(kev)} actively exploited CVEs")
     nvd = {vp: intel.nvd_product(*vp, log=log) for vp in sorted(needed)}
     cycles = intel.eol_cycles("linux") if want_kernel else []
+    products = {rel["product"] for d in devices for rel in os_releases(evid[d["id"]])}
+    os_cycles = {p: intel.eol_cycles(p) for p in sorted(products)}
     total: dict[str, int] = {}
     for d in devices:
-        fs = assess_device(d, evid[d["id"]], kev, nvd, cycles)
+        fs = assess_device(d, evid[d["id"]], kev, nvd, cycles, os_cycles)
         store.replace_findings(d["id"], fs)
         for f in fs:
             total[f["severity"]] = total.get(f["severity"], 0) + 1

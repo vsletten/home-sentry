@@ -62,8 +62,8 @@ def test_parse_avahi_unescapes_and_filters_iface():
 
 def test_parse_nmap_xml_open_ports_only():
     r = discover.parse_nmap_xml(NMAP_XML)
-    assert ("nmap", "open_port", "80/tcp http lighttpd") in r["10.99.0.1"]
-    assert ("nmap", "http_title", "Technicolor CGA4131COM") in r["10.99.0.1"]
+    assert ("ports", "open_port", "80/tcp http lighttpd") in r["10.99.0.1"]
+    assert ("ports", "http_title", "Technicolor CGA4131COM") in r["10.99.0.1"]
     assert len(r["10.99.0.1"]) == 2
 
 
@@ -181,8 +181,8 @@ def test_auto_rescan_replaces_older_auto_guess(tmp_path):
 def test_printer_from_ports():
     g = identify.guess(
         ev(
-            ("nmap", "open_port", "9100/tcp jetdirect"),
-            ("nmap", "open_port", "443/tcp http Canon printer web interface"),
+            ("ports", "open_port", "9100/tcp jetdirect"),
+            ("ports", "open_port", "443/tcp http Canon printer web interface"),
         ),
         "Canon",
     )
@@ -219,7 +219,7 @@ def test_kb_learns_only_model_specific_rules(tmp_path):
     hr34 = ev(
         ("ssdp", "modelName", "HR34"),
         ("ssdp", "modelDescription", "DIRECTV Plus HD DVR"),
-        ("nmap", "http_title", "Did not follow redirect to http://10.9.9.20:8181"),
+        ("ports", "http_title", "Did not follow redirect to http://10.9.9.20:8181"),
     )
     path = kb.learn({"make": "DIRECTV", "model": "HR34"}, hr34, out_dir=tmp_path)
     text = path.read_text()

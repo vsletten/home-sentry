@@ -43,7 +43,7 @@ class FakeNet:
         monkeypatch.setattr(discover, "lan_context", lambda: ctx)
         monkeypatch.setattr(discover, "arp_sweep", lambda c, i: {ip: MACS[ip] for ip in self.up})
         monkeypatch.setattr(discover, "reverse_dns", lambda ips: {})
-        monkeypatch.setattr(discover, "mdns", lambda iface, seconds=8: {})
+        monkeypatch.setattr(discover, "mdns", lambda iface, seconds=8, local_ip=None: {})
         monkeypatch.setattr(discover, "ssdp", lambda seconds=4.0, local_ip=None: {})
         monkeypatch.setattr(discover, "service_scan", lambda ips, top_ports=100: self.svc)
         monkeypatch.setattr(discover, "tailscale_peers", lambda: self.peers)
@@ -78,13 +78,13 @@ def test_scan_pipeline_baseline_new_device_ports_findings_offline(home, monkeypa
     st.set_identity(nas["id"], {"label": "NAS", "device_type": "nas"}, "user", 1.0, True)
 
     net.up.add(NEWBIE)
-    net.svc = {NAS: [("nmap", "open_port", "2049/tcp nfs")]}
+    net.svc = {NAS: [("ports", "open_port", "2049/tcp nfs")]}
     s2 = scan(st, ports=True)  # first port scan = port baseline: no port events yet
     assert ("new_device", "New device joined the network") in kinds(s2)
     assert not [k for k, _ in kinds(s2) if k.startswith("port_")]
     assert ("finding_new", "New finding: NFS share reachable") in kinds(s2)
 
-    net.svc = {NAS: [("nmap", "open_port", "23/tcp telnet")]}
+    net.svc = {NAS: [("ports", "open_port", "23/tcp telnet")]}
     s3 = scan(st, ports=True)
     k3 = kinds(s3)
     assert ("port_opened", "Port 23/tcp opened") in k3
@@ -461,11 +461,23 @@ def test_doctor_flags_snap_nmap(home, monkeypatch):
     class P:
         stdout = "active\n"
 
-    rows = {
-        r["check"]: r
-        for r in doctor.checks(Store(home / "inventory.db"), runner=lambda *a, **k: P())
+    def rows():
+        st = Store(home / "inventory.db")
+        return {r["check"]: r for r in doctor.checks(st, runner=lambda *a, **k: P())}
+
+    # default: the built-in scanner; a snap nmap lying around is irrelevant
+    monkeypatch.delenv("HOMESENTRY_PORTSCAN", raising=False)
+    r = rows()
+    assert "tool nmap" not in r and r["port scanner"] == {
+        "check": "port scanner",
+        "status": "ok",
+        "msg": "built-in",
     }
-    assert rows["tool nmap"]["status"] == "fail" and "apt install nmap" in rows["tool nmap"]["msg"]
+    # asked for nmap, and it's a snap: that will fail inside the hardened units
+    monkeypatch.setenv("HOMESENTRY_PORTSCAN", "nmap")
+    monkeypatch.setattr(discover.shutil, "which", doctor.shutil.which)
+    r = rows()
+    assert r["tool nmap"]["status"] == "fail" and "apt install nmap" in r["tool nmap"]["msg"]
 
 
 def test_doctor_reports_and_fixes_data_dir_mode(home):

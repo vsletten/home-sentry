@@ -30,25 +30,42 @@ def checks(store: Store, runner=subprocess.run) -> list[dict[str, Any]]:
     d = data_dir()
     mode = d.stat().st_mode & 0o777
     add("data dir", OK if not mode & 0o077 else FAIL, f"{d} (mode {mode:o})")
-    for tool, why in (
-        ("ip", "LAN discovery"),
-        ("nmap", "port/service scans"),
-        ("avahi-browse", "mDNS discovery"),
-        ("tailscale", "device names from your tailnet"),
-        ("ssh", "outside-in probe"),
-    ):
+    from . import discover, netinfo
+
+    plat = netinfo.platform()
+    try:
+        ctx = netinfo.lan_context()
+        add("network", OK, f"{ctx['cidr']} on {ctx['iface']} via {ctx['gateway'] or '?'} ({plat})")
+    except Exception as e:  # noqa: BLE001 - the check's whole point is to report this
+        add("network", FAIL, f"can't read this machine's network on {plat}: {e}")
+    required = {"linux": ("ip",), "darwin": ("route", "ifconfig", "arp")}.get(plat, ())
+    for tool in required:
         p = shutil.which(tool)
-        if tool == "nmap" and p and os.path.realpath(p).startswith("/snap/"):
-            # snap-confine refuses to run under NoNewPrivileges/ProtectSystem/PrivateTmp,
-            # so a snap nmap silently fails every port scan inside the hardened units.
-            add(
-                "tool nmap",
-                FAIL,
-                f"{p} is a snap: it can't run in the sandboxed units; "
-                "install the distro package (apt install nmap)",
-            )
-            continue
-        add(f"tool {tool}", OK if p else (FAIL if tool == "ip" else WARN), p or f"missing ({why})")
+        add(f"tool {tool}", OK if p else FAIL, p or "missing (LAN discovery)")
+    engine = discover.port_engine()
+    nmap = shutil.which("nmap")
+    if engine == "nmap" and nmap and os.path.realpath(nmap).startswith("/snap/"):
+        # snap-confine refuses to run under NoNewPrivileges/ProtectSystem/PrivateTmp,
+        # so a snap nmap silently fails every port scan inside the hardened units.
+        add(
+            "tool nmap",
+            FAIL,
+            f"{nmap} is a snap: it can't run in the sandboxed units; "
+            "install the distro package (apt install nmap) or drop HOMESENTRY_PORTSCAN=nmap",
+        )
+    else:
+        add("port scanner", OK, "built-in" if engine == "native" else f"nmap ({nmap})")
+    try:
+        import zeroconf  # noqa: F401
+
+        add("mdns", OK, "built-in (zeroconf)")
+    except ImportError:
+        av = shutil.which("avahi-browse")
+        add("mdns", OK if av else WARN, av or "no zeroconf and no avahi-browse: mDNS is off")
+    ts = netinfo.tailscale_cmd()
+    add("tool tailscale", OK if ts else WARN, ts[0] if ts else "missing (names from your tailnet)")
+    ssh = shutil.which("ssh")
+    add("tool ssh", OK if ssh else WARN, ssh or "missing (outside-in probe)")
     for name, need in (
         ("env", "OLLAMA_API_KEY for the wizard/Ask"),
         ("gateway.env", "gateway reader"),
@@ -88,6 +105,9 @@ def checks(store: Store, runner=subprocess.run) -> list[dict[str, Any]]:
         OK if ps and time.time() - ps["finished"] < 2 * 86400 else WARN,
         _age(ps["finished"] if ps else None),
     )
+    if plat != "linux":
+        add("background service", WARN, f"no background service for {plat} yet")
+        return out
     for unit in ("homesentry.service", "homesentry-watch.timer"):
         try:
             r = runner(
