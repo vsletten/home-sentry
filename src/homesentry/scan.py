@@ -86,10 +86,15 @@ def _run_scan(store, ports, threats, gateway, log, extra) -> dict[str, Any]:
         summary["local_network_blocked"] = True
     if ports and not ports_ok:
         log("port scan did not complete; keeping the previous port evidence")
+    upstream_dns = None
     if gateway:
         gw = _gateway_pass(store, nets_ctx[0] if nets_ctx else None, entries, log)
         if gw:
+            upstream_dns = gw.pop("wan_dns", None)
             summary["gateway"] = gw
+    dns_sum = _dns_pass(store, nets_ctx[0] if nets_ctx else None, upstream_dns, log)
+    if dns_sum:
+        summary["dns"] = dns_sum
     store.mark_presence(started, networks=scanned)
     if threats:
         from . import threat
@@ -350,12 +355,44 @@ def _gateway_pass(store, ctx, entries, log) -> dict[str, Any] | None:
         "firmware": cfg.get("firmware"),
         "clients": len(cfg["clients"]),
         "new_offline": offline,
+        "wan_dns": cfg.get("wan_dns") or None,  # popped by the caller for the DNS pass
     }
     log(
         f"gateway: {cfg.get('vendor')} {cfg.get('model')} fw {cfg.get('firmware')}; "
         f"{len(cfg['clients'])} DHCP clients, {offline} new offline devices"
     )
     return summary
+
+
+def _dns_pass(store, ctx, upstream, log) -> dict[str, Any] | None:
+    """Record which DNS servers this LAN is told to use (DHCP) and, when the gateway was
+    read this scan, which ones the gateway forwards to. Both live on the gateway's device
+    record; the first sight is the baseline, changes become events and findings."""
+    from . import dns
+
+    if not ctx or not ctx.get("gateway"):
+        return None
+    gw = next((d for d in store.devices() if d["ip"] == ctx["gateway"] and d["mac"]), None)
+    if gw is None:
+        return None
+    got = dns.collect(ctx)
+    if got is None and upstream is None:
+        log("dns: could not read this machine's DNS servers (no nmcli/resolvectl/ipconfig?)")
+        return None
+    cur = dns.record(
+        store,
+        gw["id"],
+        dhcp=got["servers"] if got else None,
+        via=got["via"] if got else None,
+        upstream=upstream,
+    )
+    said = dns.describe(cur["dhcp"], ctx["gateway"], ctx["cidr"])
+    up = dns.describe(cur["upstream"], ctx["gateway"], ctx["cidr"]) if cur["upstream"] else None
+    log(
+        f"dns: DHCP hands out {said} (via {cur.get('via')})"
+        + (f"; gateway forwards to {up}" if up else "")
+    )
+    return {"dhcp": said, "upstream": up, "via": cur.get("via")}
 
 
 def _stale_nat(prior: list[dict[str, Any]], vendor, rnd: bool, selfr) -> bool:

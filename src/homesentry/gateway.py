@@ -4,13 +4,15 @@ Technicolor/Vantiva, Arris and Sagemcom boxes, e.g. CGA4131COM, XB6/7/8).
 Safety model. "Only GET requests" is NOT read-only on this firmware: deleting a
 port-forward rule is a plain GET link (`actionHandler/ajax_port_forwarding.jst?del=1`).
 So the reader:
-  - fetches ONLY the fixed page names in PAGES (plus the login POST and the logout page);
+  - fetches ONLY the fixed page names in PAGES and OPTIONAL_PAGES (plus the login POST and
+    the logout page); an optional page that 404s on some firmware is skipped, not fatal;
   - never follows links, never touches actionHandler/, never submits a form;
   - refuses anything else at the transport layer (_get), with a test proving it.
 
 Privacy. Credentials come from ~/.config/homesentry/gateway.env (mode 600) and are never
 logged or stored. Serial numbers, WPS PIN, CM MAC, WAN IP and Wi-Fi keys are not
-collected: the parsers pick named fields only.
+collected: the parsers pick named fields only. network_setup.jst shows the WAN address too;
+only its four DNS-server fields are read (the DNS watch compares them scan to scan).
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ PAGES = (
     "device_discovery.jst",
     "remote_management.jst",
 )
+# Read if present. Older RDK-B builds may not serve these; a 404 must not fail the read.
+OPTIONAL_PAGES = ("network_setup.jst",)
 
 
 class GatewayError(RuntimeError):
@@ -74,7 +78,7 @@ class RdkbReader:
         )
 
     def _get(self, page: str) -> str:
-        if page not in PAGES and page != LOGOUT:
+        if page not in PAGES and page not in OPTIONAL_PAGES and page != LOGOUT:
             raise GatewayError(f"refusing non-allowlisted gateway page: {page!r}")
         r = self.c.get(f"/{page}")
         if r.status_code != 200:
@@ -98,6 +102,11 @@ class RdkbReader:
         self.login(user, password)
         try:
             pages = {p: self._get(p) for p in PAGES}
+            for p in OPTIONAL_PAGES:
+                try:
+                    pages[p] = self._get(p)
+                except (GatewayError, httpx.HTTPError):
+                    pass
         finally:
             try:
                 self._get(LOGOUT)
@@ -185,6 +194,30 @@ def parse_clients(h: str) -> list[dict[str, Any]]:
     return out
 
 
+def parse_wan_dns(h: str) -> list[str]:
+    """The resolvers the gateway itself forwards to (Device.DNS.Client.Server.*), from the
+    four DNS fields of network_setup.jst. Nothing else on that page is read."""
+    import ipaddress
+
+    out = []
+    for label in (
+        "Primary DNS Server (IPv4)",
+        "Secondary DNS Server (IPv4)",
+        "Primary DNS Server (IPv6)",
+        "Secondary DNS Server (IPv6)",
+    ):
+        v = _field(h, label)
+        if not v:
+            continue
+        try:
+            ipaddress.ip_address(v)
+        except ValueError:
+            continue  # "-NA-", "::" placeholders
+        if v not in out:
+            out.append(v)
+    return out
+
+
 def parse_port_forwarding(h: str) -> dict[str, Any]:
     m = re.search(r'#pf_switch"\)\.radioswitch\(\{.*?state:\s*(true|false)', h, re.S)
     rules = []
@@ -225,6 +258,7 @@ def parse_all(pages: dict[str, str]) -> dict[str, Any]:
         "upnp": _js_bool(g("device_discovery.jst"), "jsEnableUPnP"),
         "zeroconf": _js_bool(g("device_discovery.jst"), "jsEnableZero"),
         "remote_mgmt_https": _js_bool(g("remote_management.jst"), "HTTPS"),
+        "wan_dns": parse_wan_dns(g("network_setup.jst")),
     }
 
 

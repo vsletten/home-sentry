@@ -57,7 +57,7 @@ def evidence_brief(device: dict[str, Any], evidence: list[dict[str, Any]]) -> st
     if device.get("hostname"):
         lines.append(f"DNS name: {device['hostname']}")
     for e in evidence:
-        if e["key"] in PRIVATE_KEYS or e["source"] in ("auto", "gateway_cfg"):
+        if e["key"] in PRIVATE_KEYS or e["source"] in ("auto", "gateway_cfg", "dns"):
             continue
         lines.append(f"{e['source']}.{e['key']}: {e['value']}")
     cur = {k: device.get(k) for k in ("device_type", "make", "model", "firmware", "label")}

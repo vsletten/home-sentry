@@ -18,6 +18,7 @@ discover (ARP sweep · mDNS · SSDP/UPnP · port/service scan · gateway reader 
    → wizard  (photo → vision reader → transcript; glm-5.3 reasons)  ← what rules can't pin
    → confirm (locks identity, teaches the KB)
    → threats (exposure rules · EOL kernels + OS releases · CVE leads: NVD + CISA KEV)
+   → dns     (what DHCP hands out · what the gateway forwards to → baseline → change = event)
    → watch   (snapshot before/after every scan → diff → timeline events → optional push)
    → plan    (posture score 0-100 · findings → playbooks → actions ranked by gain/minute)
    → ask     (household analyst over the whole picture, devices as opaque handles)
@@ -28,7 +29,7 @@ discover (ARP sweep · mDNS · SSDP/UPnP · port/service scan · gateway reader 
 | **Overview** | Score gauge + trend, the next three actions, recent changes, devices by network |
 | **Plan** | Every action ranked by score gained per minute, with steps, the devices it covers, a score ladder, and *accept risk* (with a reason) for things you won't fix |
 | **Map** | Server-rendered SVG topology, zero JS: lanes by role, color = worst risk, and dashed *hidden network* pockets for boxes that NAT their own clients |
-| **Timeline** | New devices, ports opening/closing, firmware updates, findings appearing/escalating/resolving, infrastructure going dark |
+| **Timeline** | New devices, ports opening/closing, firmware updates, DNS resolvers changing, findings appearing/escalating/resolving, infrastructure going dark |
 | **Ask** | "What should I fix first?" Chat with an analyst that sees the whole house |
 | **Report** | One printable page (`homesentry report -o x.html`): score, plan, week's changes, inventory, blind spots |
 | **Guides** | Local runbooks (e.g. a Wi-Fi cutover), strict slug names, read-only |
@@ -73,10 +74,30 @@ because their fix is an OS update.
 `~/.config/homesentry/gateway.env` (mode 600) and every scan logs into a Comcast/Xfinity
 RDK-B gateway (`*.jst` UI) over HTTPS, reads a fixed allowlist of status pages, and logs out.
 It adds the gateway's exact model/firmware, DHCP hostnames, devices the gateway remembers but
-that are offline now, and config findings (port forwards, DMZ, UPnP, remote management,
-firewall levels, Wi-Fi security). It never follows links: on this firmware even deleting a
-port-forward rule is a plain GET. Serial, WPS PIN, WAN IP and Wi-Fi keys are never collected,
-and gateway config never reaches the LLM. `homesentry gateway` prints a summary.
+that are offline now, the resolvers the gateway forwards DNS to (the four DNS fields of its
+WAN page, nothing else on it), and config findings (port forwards, DMZ, UPnP, remote
+management, firewall levels, Wi-Fi security). It never follows links: on this firmware even
+deleting a port-forward rule is a plain GET. Serial, WPS PIN, WAN IP and Wi-Fi keys are never
+collected, and gateway config never reaches the LLM. `homesentry gateway` prints a summary.
+
+**DNS watch.** The attack that is actually happening to home routers is quiet: a compromised
+gateway hands every device a DNS server the attacker runs, and nothing else looks different.
+So every scan records, on the gateway's device record, the DNS servers DHCP handed this
+machine (Linux: `nmcli`'s DHCP option, then `resolvectl`, then `/etc/resolv.conf`; macOS:
+`ipconfig getpacket`, the DHCP ACK itself, then `scutil --dns`) and, when the gateway reader
+ran, the servers the gateway forwards to. The first sight is the baseline. A change is a
+timeline event (high if the new set has an address HomeSentry doesn't recognize, medium
+otherwise); a set that differs from the baseline is a *medium* finding, and an unrecognized
+public resolver is a *high* finding even on the first scan, because a box that was already
+hijacked when HomeSentry arrived must not become "normal". "Recognized" means your gateway, a
+device on your LAN, Tailscale MagicDNS, or a well-known resolver (Comcast, Cloudflare, Google,
+Quad9, OpenDNS, NextDNS, AdGuard, Control D, Mullvad, the big US ISPs...). Accepting a DNS
+finding means "I changed it": the current set becomes the new baseline, and the finding's
+title carries a fingerprint of the set, so accepting one change never silences the next.
+Addresses stay out of event and finding titles (those reach push alerts and the LLM); the
+device page shows them. `homesentry doctor` shows what the sensor reads on this machine.
+The playbook's last step is the one that makes the gateway irrelevant: encrypted DNS
+(DoH/DoT) on your router or devices, pointed at a resolver you chose.
 
 **Outside-in check (optional):** `~/.config/homesentry/probe.env` with `PROBE_SSH=<ssh alias>`
 (and `PROBE_SSH_AGENT=` if the key lives in a desktop agent). `homesentry outside` (or the
@@ -105,6 +126,7 @@ pure parsers that are tested on every OS. The rest is the same Python everywhere
 | mDNS | python-zeroconf, shares UDP 5353 with avahi / mDNSResponder | avahi only as fallback |
 | Ports | `portscan.py`: asyncio connects + read-only protocol probes | see below |
 | MAC vendors | bundled IEEE MA-L table (`scripts/build_oui.py`) | same names on every OS |
+| DNS lease | Linux `nmcli` → `resolvectl` → `/etc/resolv.conf`; macOS `ipconfig getpacket` → `scutil --dns` | the DHCP option itself where the OS exposes it |
 
 **The port scanner** connects to ~140 home-relevant TCP ports (a superset of the classic
 top-100), at most 12 at a time per host (a 2007 set-top box drops ports at 24), and retries

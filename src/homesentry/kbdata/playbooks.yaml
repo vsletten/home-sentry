@@ -32,6 +32,22 @@
     - Otherwise replace it with access points that have a local admin page, in AP/bridge mode, reusing the same Wi-Fi name and password.
     - Keep the old unit for a week as a rollback, then return it.
 
+- id: dns-resolvers
+  match: {kind: [config], title: "(?i)^DNS (points at|resolvers changed)"}
+  title: "Find out who changed the DNS resolvers on {device}"
+  who: you (+ ISP if it wasn't you)
+  effort_min: 15
+  why: >-
+    Whoever answers your DNS decides where every name in the house goes. A hijacked router
+    changes nothing visible except this, so a new resolver is the one signal worth
+    checking the same day. Most often it is deliberate (you set up a filter, the ISP
+    moved resolvers); make sure.
+  steps:
+    - On the device page, read the addresses in the finding. If you set them (Pi-hole, NextDNS, Cloudflare...), accept the finding; the new set becomes the baseline.
+    - If you didn't, log into the gateway and check its DNS and DHCP settings, then change its admin password.
+    - Factory-reset the gateway (or have the ISP push a reset) and reboot it; rescan to confirm the resolvers are back to normal.
+    - Make the gateway irrelevant to DNS: turn on encrypted DNS (DoH/DoT) on your router or devices, pointed at a resolver you chose.
+
 - id: close-internet-exposure
   match: {kind: [config], title: "(?i)port forward .* is live|DMZ host|remote management is on"}
   title: "Close the internet-facing hole on {device}"
