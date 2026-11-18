@@ -75,8 +75,18 @@ def pf(enabled, active):
     )
 
 
+# WAN page: the WAN address on it must never be collected; only the four DNS fields are read.
+NETWORK_SETUP = (
+    field("WAN IP Address (IPv4)", "203.0.113.77")
+    + field("Primary DNS Server (IPv4)", "75.75.75.75")
+    + field("Secondary DNS Server (IPv4)", "75.75.76.76")
+    + field("Primary DNS Server (IPv6)", "2001:558:feed::1")
+    + field("Secondary DNS Server (IPv6)", "-NA-")
+)
+
 PAGES = {
     "hardware.jst": HARDWARE,
+    "network_setup.jst": NETWORK_SETUP,
     "software.jst": SOFTWARE,
     "connection_status.jst": STATUS,
     "connected_devices_computers.jst": CLIENTS,
@@ -124,6 +134,8 @@ def test_reader_parses_everything_and_skips_identifiers():
     assert (cfg["model"], cfg["vendor"], cfg["hw_rev"]) == ("CGA0000COM", "Technicolor", "2.1")
     assert cfg["firmware"] == "CGA0000COM_1.2p3_PROD" and cfg["docsis"] == "Prod_1.0"
     assert "999999999" not in repr(cfg)  # serial never collected
+    assert cfg["wan_dns"] == ["75.75.75.75", "75.75.76.76", "2001:558:feed::1"]
+    assert "203.0.113.77" not in repr(cfg)  # WAN address never collected
     assert cfg["wifi"] == [
         {"band": "2.4 GHz", "active": False, "security": "WPA2-PSK (AES)"},
         {"band": "5 GHz", "active": True, "security": "WEP"},
@@ -161,13 +173,39 @@ def test_reader_only_touches_allowlist_and_never_the_delete_link():
     posts = [p for m, p, _ in log if m == "POST"]
     gets = [p for m, p, _ in log if m == "GET"]
     assert posts == ["check.jst"]
-    assert set(gets) <= set(gateway.PAGES) | {"", "home_loggedout.jst"}
+    assert set(gets) <= set(gateway.PAGES) | set(gateway.OPTIONAL_PAGES) | {
+        "",
+        "home_loggedout.jst",
+    }
     assert not any("actionHandler" in p or "del=" in q for _, p, q in log)
     assert gets[-1] == "home_loggedout.jst"  # always logs out
     with pytest.raises(gateway.GatewayError):
         reader._get("actionHandler/ajax_port_forwarding.jst?del=1")
     with pytest.raises(gateway.GatewayError):
         reader._get("restore_reboot.jst")
+
+
+def test_optional_page_missing_on_older_firmware_is_not_fatal():
+    pages = {k: v for k, v in PAGES.items() if k != "network_setup.jst"}
+    log = []
+
+    def handler(req: httpx.Request):
+        path = req.url.path.lstrip("/")
+        log.append(path)
+        if req.method == "POST":
+            return httpx.Response(302, headers={"location": "at_a_glance.jst"})
+        if path == "":
+            return httpx.Response(200, text=LOGIN_PAGE)
+        if path == "home_loggedout.jst":
+            return httpx.Response(200, text="bye")
+        if path not in pages:
+            return httpx.Response(404, text="not here")
+        return httpx.Response(200, text=pages[path])
+
+    client = httpx.Client(base_url="https://gw", transport=httpx.MockTransport(handler))
+    cfg = gateway.RdkbReader("gw", client=client).read("admin", "pw")
+    assert cfg["model"] == "CGA0000COM" and cfg["wan_dns"] == []
+    assert log[-1] == "home_loggedout.jst"
 
 
 def test_login_failure_is_one_attempt_and_no_password_in_error():

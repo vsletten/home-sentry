@@ -6,7 +6,7 @@
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}</style>
 <h1 style="margin:0 0 4px;font-size:22px">Timeline</h1>
 <p class="mute small" style="margin:0">What changed between scans: new devices, ports opening and closing, firmware updates,
-findings appearing and getting fixed. {% if watch %}Automatic scans run every {{ watch }}.{% else %}Turn on the watch timer to fill this in automatically.{% endif %}</p>
+DNS resolvers changing, findings appearing and getting fixed. {% if watch %}Automatic scans run every {{ watch }}.{% else %}Turn on the watch timer to fill this in automatically.{% endif %}</p>
 <div class="filters">
   <a class="chip {{ 'ok' if not only }}" href="/timeline">everything</a>
   <a class="chip {{ 'ok' if only == 'important' }}" href="/timeline?only=important">important only</a>

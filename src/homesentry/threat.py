@@ -408,6 +408,15 @@ def assess_device(
             from .gateway import config_findings
 
             findings += config_findings(json.loads(e["value"]))
+        if e["source"] == "dns" and e["key"] == "servers":
+            from . import dns
+
+            findings += dns.findings(
+                dns.stored(evidence),
+                dns.stored(evidence, "baseline"),
+                device.get("ip"),
+                device.get("network"),
+            )
 
     findings.sort(key=lambda f: SEVERITY_ORDER.index(f["severity"]))
     return findings

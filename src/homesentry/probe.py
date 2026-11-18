@@ -19,7 +19,7 @@ import time
 import traceback
 from typing import Any
 
-from . import discover, netinfo
+from . import discover, dns, netinfo
 
 Sighting = tuple[str, str, str]
 
@@ -112,9 +112,11 @@ def collect(
                 "ptr": ptr.get(ip),
                 "sightings": sorted({tuple(s) for s in sights}),
             }
+        lease = _timed(errors, timings, f"{tag}:dns", lambda c=ctx: dns.collect(c), None)
         out["networks"].append(
             ctx
             | {
+                "dns": lease,
                 "hosts": hosts,
                 "counts": {
                     "arp": len(neigh),

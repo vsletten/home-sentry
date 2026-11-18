@@ -30,7 +30,7 @@
 {{ {"new_device": "🆕", "reappeared": "👻", "device_offline": "🔌", "device_online": "🔋",
     "ip_changed": "🔁", "firmware_changed": "⬆️", "port_opened": "🚪", "port_closed": "🔒",
     "finding_new": "⚠️", "finding_escalated": "🔥", "finding_resolved": "✅", "baseline": "📋",
-    "device_remembered": "💤"}.get(kind, "•") }}
+    "device_remembered": "💤", "dns_changed": "🧭"}.get(kind, "•") }}
 {%- endmacro %}
 
 {% macro event_row(e, names) -%}

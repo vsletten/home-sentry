@@ -16,7 +16,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import __version__, agent, data_dir, netmap, plan, wizard
+from .. import __version__, agent, data_dir, dns, netmap, plan, wizard
 from ..llm import LLM, OllamaClient, parse_json_reply
 from ..scan import run_scan
 from ..store import Store
@@ -175,6 +175,8 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
             raise HTTPException(404)
         for f in a["findings"]:
             S().accept_risk(f["device_id"], f["fkey"], note)
+            if dns.is_dns_fkey(f["fkey"]):  # "I changed it": the current set is the new normal
+                dns.rebaseline(S(), f["device_id"])
         return RedirectResponse("/plan", status_code=303)
 
     @app.post("/plan/unaccept")
@@ -317,6 +319,8 @@ def create_app(store: Store | None = None, llm: LLM | None = None) -> FastAPI:
         device_id: int, fkey: Annotated[str, Form()], note: Annotated[str, Form()] = ""
     ):
         S().accept_risk(device_id, fkey, note)
+        if dns.is_dns_fkey(fkey):  # "I changed it": the current set is the new normal
+            dns.rebaseline(S(), device_id)
         return RedirectResponse(f"/device/{device_id}", status_code=303)
 
     @app.post("/device/{device_id}/unaccept")

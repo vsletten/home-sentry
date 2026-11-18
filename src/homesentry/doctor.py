@@ -37,7 +37,17 @@ def checks(store: Store, runner=subprocess.run) -> list[dict[str, Any]]:
         ctx = netinfo.lan_context()
         add("network", OK, f"{ctx['cidr']} on {ctx['iface']} via {ctx['gateway'] or '?'} ({plat})")
     except Exception as e:  # noqa: BLE001 - the check's whole point is to report this
+        ctx = None
         add("network", FAIL, f"can't read this machine's network on {plat}: {e}")
+    if ctx:
+        from . import dns
+
+        got = dns.collect(ctx)
+        if got:
+            said = dns.describe(got["servers"], ctx.get("gateway"), ctx.get("cidr"))
+            add("dns resolvers", OK, f"{said} (via {got['via']})")
+        else:
+            add("dns resolvers", WARN, "can't read this machine's DNS servers (DNS watch is off)")
     required = {"linux": ("ip",), "darwin": ("route", "ifconfig", "arp")}.get(plat, ())
     for tool in required:
         p = shutil.which(tool)

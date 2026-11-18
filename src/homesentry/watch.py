@@ -2,7 +2,8 @@
 
 Every scan (manual or timed) takes a snapshot before and after, diffs them and writes
 events: new devices, retired devices coming back, infrastructure going offline, ports
-opening/closing, firmware changes, findings appearing/escalating/resolving.
+opening/closing, firmware changes, DNS resolvers changing, findings
+appearing/escalating/resolving.
 
 Event titles never contain device names or addresses. The UI renders the device label
 from device_id, which keeps events safe to summarize for the LLM.
@@ -18,7 +19,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from . import data_dir
+from . import data_dir, dns
 from .store import Store
 
 SEV = ["critical", "high", "medium", "low", "info"]
@@ -71,7 +72,13 @@ def finding_key(f: dict[str, Any]) -> str:
 
 # ---- snapshot / diff -------------------------------------------------------------
 def snapshot(store: Store) -> dict[str, Any]:
-    snap: dict[str, Any] = {"devices": {}, "ports": {}, "port_scanned": {}, "findings": {}}
+    snap: dict[str, Any] = {
+        "devices": {},
+        "ports": {},
+        "port_scanned": {},
+        "findings": {},
+        "dns": {},
+    }
     for d in store.devices(include_retired=True):
         did = d["id"]
         snap["devices"][did] = {
@@ -98,6 +105,10 @@ def snapshot(store: Store) -> dict[str, Any]:
         snap["port_scanned"][did] = any(
             e["source"] == "ports" and e["key"] == "scanned" for e in ev
         )
+        for e in ev:
+            if e["source"] == "dns" and e["key"] == "servers":
+                cur = json.loads(e["value"])
+                snap["dns"][did] = {k: cur.get(k) or [] for k in ("dhcp", "upstream")}
     for f in store.findings():
         snap["findings"][f"{f['device_id']}|{finding_key(f)}"] = {
             "device_id": f["device_id"],
@@ -219,6 +230,42 @@ def diff(before: dict[str, Any], after: dict[str, Any], ports_scanned: bool) -> 
                 )
             for p in sorted(bp - ap):
                 out.append(_ev("port_closed", "info", f"Port {p} closed", did))
+
+    # DNS resolvers: the gateway telling the house to ask someone new is the signature of a
+    # hijacked router. First sight is the baseline; "unknown this scan" is kept, not diffed.
+    for did, a in after.get("dns", {}).items():
+        b = (before.get("dns") or {}).get(did)
+        dev = adev.get(did) or {}
+        if not b or dev.get("retired"):
+            continue
+        for key, title in (
+            ("dhcp", "DHCP now hands out different DNS servers"),
+            ("upstream", "Gateway now forwards DNS to different servers"),
+        ):
+            old, new = b.get(key) or [], a.get(key) or []
+            if not old or not new or set(old) == set(new):
+                continue
+            gw, cidr = dev.get("ip"), dev.get("network")
+            risky = bool(dns.unrecognized(new, gw, cidr))
+            out.append(
+                _ev(
+                    "dns_changed",
+                    "high" if risky else "medium",
+                    title,
+                    did,
+                    f"Was {dns.describe(old, gw, cidr)}, now {dns.describe(new, gw, cidr)}. "
+                    + (
+                        "The new set includes an address HomeSentry doesn't recognize: check "
+                        "the gateway's finding before trusting any website."
+                        if risky
+                        else "Every new address is a recognized resolver; still, if you "
+                        "didn't change it, ask who did."
+                    ),
+                    old=old,
+                    new=new,
+                    which=key,
+                )
+            )
 
     bf, af = before["findings"], after["findings"]
     for k, f in af.items():
