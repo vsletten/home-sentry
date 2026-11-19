@@ -1,4 +1,11 @@
-"""Outside-in exposure check from a host you own (e.g. a VPS), over SSH.
+"""Outside-in exposure check: what the internet can reach.
+
+Layers (see exposure.py): the router's own report (UPnP IGD / NAT-PMP, always on, local),
+then an active check, either over SSH from a host you own (below) or from a HomeSentry
+reflector (`PROBE_URL=`), plus opt-in passive lookup (`INTERNETDB=1`). Devices with public
+IPv6 addresses are checked one by one.
+
+The SSH probe:
 
 The probe script is piped to `python3 -` on the probe host's stdin: nothing is installed
 or written there. It targets the address the probe host sees our SSH connection coming
@@ -9,6 +16,8 @@ TCP connect scan only (no raw packets, no banners), bounded concurrency so a bus
 barely notices. Config: ~/.config/homesentry/probe.env
     PROBE_SSH=ci-vps                               # ssh alias / user@host
     PROBE_SSH_AGENT=/run/user/1000/keyring/ssh     # optional IdentityAgent
+or  PROBE_URL=https://reflector.example            # a HomeSentry reflector instead
+    INTERNETDB=1                                   # also ask Shodan InternetDB (opt-in)
 """
 
 from __future__ import annotations
@@ -79,7 +88,9 @@ ALWAYS = [7547, 8181, 11434, 32400, 51820, 8443]  # TR-069, gateway remote mgmt,
 REMOTE = r"""
 import asyncio, json, os, sys, time
 target = os.environ["SSH_CLIENT"].split()[0]
-ports = [int(p) for p in sys.argv[1:]]
+args = sys.argv[1:]
+extra = args[args.index("--v6") + 1:] if "--v6" in args else []
+ports = [int(p) for p in (args[:args.index("--v6")] if "--v6" in args else args)]
 async def one(sem, p):
     async with sem:
         try:
@@ -88,12 +99,23 @@ async def one(sem, p):
             return p
         except Exception:
             return None
+async def scan(sem, t):
+    async def one_t(p):
+        async with sem:
+            try:
+                r, w = await asyncio.wait_for(asyncio.open_connection(t, p), 1.5)
+                w.close()
+                return p
+            except Exception:
+                return None
+    return sorted(p for p in await asyncio.gather(*(one_t(p) for p in ports)) if p)
 async def main():
     sem = asyncio.Semaphore(64)
     t = time.time()
-    hits = [p for p in await asyncio.gather(*(one(sem, p) for p in ports)) if p]
+    hits = await scan(sem, target)
+    v6 = [{"addr": a, "open": await scan(sem, a)} for a in extra]
     fam = "ipv6" if ":" in target else "ipv4"
-    print(json.dumps({"open": sorted(hits), "scanned": len(ports),
+    print(json.dumps({"open": hits, "scanned": len(ports), "v6": v6,
                       "seconds": round(time.time() - t, 1), "family": fam}))
 asyncio.run(main())
 """
@@ -108,7 +130,7 @@ def load_conf(path: Path | None = None) -> dict[str, str] | None:
         k, sep, v = line.partition("=")
         if sep and not k.strip().startswith("#"):
             out[k.strip()] = v.strip().strip("\"'")
-    return out if out.get("PROBE_SSH") else None
+    return out if (out.get("PROBE_SSH") or out.get("PROBE_URL") or out.get("INTERNETDB")) else None
 
 
 def top_ports(n: int = 1000) -> list[int]:
@@ -124,8 +146,10 @@ def top_ports(n: int = 1000) -> list[int]:
                         continue
             ports = [port for _, port in sorted(rows, reverse=True)[:n]]
             break
-    else:
-        ports = list(FALLBACK_PORTS)
+    else:  # no nmap (every Mac): our own list of what matters for a home
+        from .exposure import HOME_PORTS
+
+        ports = list(HOME_PORTS)
     return sorted(set(ports) | set(ALWAYS))
 
 
@@ -136,8 +160,12 @@ def ssh_cmd(conf: dict[str, str]) -> list[str]:
     return cmd + [conf["PROBE_SSH"]]
 
 
-def run_probe(conf: dict[str, str], ports: list[int], runner=subprocess.run) -> dict[str, Any]:
+def run_probe(
+    conf: dict[str, str], ports: list[int], runner=subprocess.run, v6: list[str] | None = None
+) -> dict[str, Any]:
     cmd = ssh_cmd(conf) + ["python3", "-", *map(str, ports)]
+    if v6:
+        cmd += ["--v6", *v6]
     r = runner(cmd, input=REMOTE, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
         raise RuntimeError(f"probe via {conf['PROBE_SSH']} failed: {r.stderr.strip()[-300:]}")
@@ -146,26 +174,120 @@ def run_probe(conf: dict[str, str], ports: list[int], runner=subprocess.run) -> 
     return res
 
 
-def run_and_record(store, log=print, rethreat: bool = True) -> dict[str, Any] | None:
-    """Probe, then attach the result to the gateway device (where WAN exposure lives)."""
-    from . import discover, threat
+def _device_by(store, *, ip: str | None = None, mac: str | None = None):
+    for d in store.devices():
+        if (ip and d["ip"] == ip) or (mac and d["mac"] == mac):
+            return d
+    return None
 
-    conf = load_conf()
-    if not conf:
-        log(f"outside-in: not configured (create {conf_path()} with PROBE_SSH=<ssh alias>)")
-        return None
-    ports = top_ports()
-    log(f"outside-in: probing {len(ports)} TCP ports from {conf['PROBE_SSH']} ...")
-    res = run_probe(conf, ports)
-    log(f"outside-in: {len(res['open'])} open {res['open']} in {res['seconds']}s")
-    gw_ip = discover.lan_context()["gateway"]
-    gw = next((d for d in store.devices() if d["ip"] == gw_ip and d["mac"]), None)
-    if gw:
-        store.clear_evidence(gw["id"], "outside")
-        store.add_evidence(gw["id"], "outside", "result", json.dumps(res))
-        if rethreat:  # the watch loop runs the threat pass itself right after
-            threat.run(store, log=log)
-    return res
+
+def _record(store, device_id: int, key: str, value: Any) -> None:
+    store.clear_evidence(device_id, "outside", key)
+    if value is not None:
+        store.add_evidence(device_id, "outside", key, json.dumps(value))
+
+
+def run_and_record(store, log=print, rethreat: bool = True) -> dict[str, Any]:
+    """Every layer that's available, recorded where the exposure lives: router/WAN results on
+    the gateway, port forwards and IPv6 results on the device they point at."""
+    from . import discover, exposure, threat
+
+    conf = load_conf() or {}
+    ctxs = discover.lan_contexts()
+    out: dict[str, Any] = {"layers": []}
+    gw = None
+    router_ext = None
+    v6_targets: dict[str, str] = {}  # address -> mac
+    for d in store.devices():  # forwards are re-derived every run
+        store.clear_evidence(d["id"], "outside", "forward")
+    for i, ctx in enumerate(ctxs):
+        rep, ext = exposure.router_report(ctx)
+        router_ext = router_ext or ext
+        g = _device_by(store, ip=ctx["gateway"])
+        if i == 0:
+            gw = g
+        if g:
+            _record(store, g["id"], "router", rep)
+        for igd in rep["igd"]:
+            for m in igd["mappings"]:
+                target = _device_by(store, ip=m["internal_ip"]) or g
+                if target:
+                    store.add_evidence(
+                        target["id"], "outside", "forward", json.dumps({**m, "wan": rep["wan"]})
+                    )
+        n_maps = sum(len(x["mappings"]) for x in rep["igd"])
+        log(
+            f"outside-in: router on {ctx['cidr']}: WAN {rep['wan']}, "
+            f"UPnP {'on' if rep['igd'] else 'off/absent'} ({n_maps} mappings), "
+            f"NAT-PMP {'on' if rep['natpmp'] else 'off'}"
+        )
+        for mac, addr in exposure.one_per_device(exposure.v6_neighbors(ctx["iface"])).items():
+            v6_targets[mac] = addr
+    out["layers"].append("router")
+    by_addr = {a: m for m, a in v6_targets.items()}
+
+    active = None
+    if conf.get("PROBE_SSH"):
+        ports = top_ports()
+        log(f"outside-in: probing {len(ports)} TCP ports from {conf['PROBE_SSH']} ...")
+        active = run_probe(conf, ports, v6=list(by_addr))
+    elif conf.get("PROBE_URL"):
+        url = conf["PROBE_URL"]
+        log(f"outside-in: asking reflector {url} ...")
+        r4 = exposure.reflector_check(url, 4)
+        active = {
+            "open": r4["open"],
+            "scanned": r4["scanned"],
+            "seconds": r4["seconds"],
+            "family": "ipv4",
+            "probe": httpx_host(url),
+            "at": time.strftime("%F %T"),
+            "v6": [],
+        }
+        if router_ext and r4.get("seen_ip") and r4["seen_ip"] != router_ext:
+            active["vpn"] = True  # the reflector saw some other exit: we tested the VPN
+        try:
+            r6 = exposure.reflector_check(url, 6, extra=list(by_addr))
+            active["v6"] = r6.get("extra", [])
+        except Exception as e:  # noqa: BLE001 - no IPv6 path is common and fine
+            log(f"outside-in: no IPv6 check ({e.__class__.__name__})")
+    if active:
+        active.setdefault("probe", conf.get("PROBE_SSH"))
+        active.setdefault("at", time.strftime("%F %T"))
+        log(f"outside-in: {len(active['open'])} open {active['open']} in {active['seconds']}s")
+        if gw:
+            _record(store, gw["id"], "result", {k: v for k, v in active.items() if k != "v6"})
+        for r in active.get("v6", []):
+            d = _device_by(store, mac=by_addr.get(r["addr"]))
+            if d:
+                _record(
+                    store,
+                    d["id"],
+                    "v6",
+                    {"open": r["open"], "probe": active["probe"], "at": active["at"]},
+                )
+        out["layers"].append("active")
+        out.update(active)
+
+    if conf.get("INTERNETDB") == "1":
+        try:
+            passive = exposure.internetdb()
+            if gw:
+                _record(store, gw["id"], "passive", passive)
+            out["layers"].append("passive")
+            log(f"outside-in: InternetDB knows {passive['ports'] or 'nothing'}")
+        except Exception as e:  # noqa: BLE001
+            log(f"outside-in: InternetDB lookup failed: {e}")
+
+    if rethreat:  # the watch loop runs the threat pass itself right after
+        threat.run(store, log=log)
+    return out
+
+
+def httpx_host(url: str) -> str:
+    import httpx
+
+    return httpx.URL(url).host
 
 
 WHY = {
@@ -210,8 +332,144 @@ def findings(res: dict[str, Any]) -> list[dict[str, Any]]:
                 "title": f"Outside-in: 0 of {res.get('scanned')} TCP ports reachable",
                 "detail": f"Checked from {res.get('probe')} at {res.get('at')}: nothing on "
                 f"your public {res.get('family', 'ipv4')} address accepted a "
-                "connection. UDP and IPv6 clients were not tested.",
+                "connection. UDP was not tested.",
                 "data": {"at": res.get("at")},
             }
         )
     return out
+
+
+DANGEROUS = {23, 139, 445, 2375, 3389, 5900, 11434}
+OUTER = {
+    "cgnat": "your internet connection is behind carrier-grade NAT, so the internet can't reach "
+    "it over IPv4",
+    "private": "this router sits behind another router, so it's reachable only from that "
+    "router's network unless the outer one forwards the port too",
+}
+
+
+def vpn_findings(res: dict[str, Any]) -> list[dict[str, Any]]:
+    if not res.get("vpn"):
+        return []
+    return [
+        {
+            "severity": "low",
+            "kind": "outside",
+            "title": "Outside-in check went through a VPN",
+            "detail": "The reflector saw a different public address than your router has, so it "
+            "tested your VPN's exit, not your home. Pause the VPN on this computer and re-run.",
+            "data": {"at": res.get("at")},
+        }
+    ]
+
+
+def router_findings(rep: dict[str, Any]) -> list[dict[str, Any]]:
+    out = []
+    if rep.get("wan") == "cgnat":
+        out.append(
+            {
+                "severity": "info",
+                "kind": "outside",
+                "title": "Carrier-grade NAT: the internet can't reach you over IPv4",
+                "detail": "Your router's internet address is a shared carrier address "
+                "(100.64.0.0/10). Nothing on the internet can start an IPv4 connection to "
+                "your home, whatever is forwarded. IPv6 is separate.",
+                "data": {"at": rep.get("at")},
+            }
+        )
+    n = sum(len(g.get("mappings", [])) for g in rep.get("igd", []))
+    if rep.get("igd"):
+        out.append(
+            {
+                "severity": "medium" if n else "low",
+                "kind": "config",
+                "title": f"UPnP port opening is on ({n} open)" if n else "UPnP port opening is on",
+                "detail": "Any device or program on your network can ask this router to open "
+                "a port to the internet, without asking you. Consoles and media servers use it; "
+                "so does malware. Turn UPnP off on the router unless something you rely on "
+                "breaks, and forward that one port by hand instead.",
+                "data": {"mappings": n, "wan": rep.get("wan")},
+            }
+        )
+    return out
+
+
+def forward_findings(m: dict[str, Any]) -> list[dict[str, Any]]:
+    port, proto = m.get("external_port"), m.get("proto", "TCP")
+    what = WHY.get(m.get("internal_port"), "a service")
+    if proto == "UDP":
+        sev = "low"  # game/voice traffic: usually what the console asked for
+    else:
+        sev = "critical" if m.get("internal_port") in DANGEROUS else "high"
+    note = ""
+    if m.get("wan") in OUTER:
+        sev, note = "low", f" Lower risk for now: {OUTER[m['wan']]}."
+    desc = f' ("{m["description"]}")' if m.get("description") else ""
+    return [
+        {
+            "severity": sev,
+            "kind": "outside",
+            "title": f"Router forwards {proto} {port} from the internet to this device",
+            "detail": f"The router's UPnP table maps {proto} {port} on your internet address to "
+            f"port {m.get('internal_port')} here{desc}: {what}. A program on this device asked "
+            f"for it; anyone on the internet can now connect.{note}",
+            "data": {"port": port, "proto": proto},
+        }
+    ]
+
+
+def v6_findings(r: dict[str, Any]) -> list[dict[str, Any]]:
+    out = []
+    for p in r.get("open", []):
+        out.append(
+            {
+                "severity": "critical" if p in DANGEROUS else "high",
+                "kind": "outside",
+                "title": f"TCP {p} reachable from the internet over IPv6",
+                "detail": "This device has its own public IPv6 address, and "
+                f"{WHY.get(p, 'a service')} on TCP {p} accepted a connection from "
+                f"{r.get('probe')} at {r.get('at')}. "
+                "IPv6 skips NAT entirely: the router's IPv6 firewall is the only thing in the "
+                "way. Turn on its inbound IPv6 blocking, or close the service.",
+                "data": {"port": p, "at": r.get("at")},
+            }
+        )
+    return out
+
+
+def passive_findings(p: dict[str, Any]) -> list[dict[str, Any]]:
+    if not p.get("known"):
+        return [
+            {
+                "severity": "info",
+                "kind": "outside",
+                "title": "Internet scanners have nothing on record for your address",
+                "detail": "Shodan InternetDB had no open ports for your public IP "
+                f"({p.get('at')}).",
+                "data": {"at": p.get("at")},
+            }
+        ]
+    return [
+        {
+            "severity": "critical" if port in DANGEROUS else "high",
+            "kind": "outside",
+            "title": f"Internet scanners recorded TCP {port} open on your address",
+            "detail": f"Shodan's weekly scan saw {WHY.get(port, 'a service')} on TCP {port} "
+            "of your public IP. That's what attackers' search engines show. If it's not "
+            "deliberate, close it; if your IP changed recently it may be the previous owner's.",
+            "data": {"port": port, "at": p.get("at")},
+        }
+        for port in p.get("ports", [])
+    ]
+
+
+def evidence_findings(e: dict[str, Any]) -> list[dict[str, Any]]:
+    """Dispatch for threat.assess_device: one stored 'outside' evidence row -> findings."""
+    v = json.loads(e["value"])
+    return {
+        "result": lambda: findings(v) + vpn_findings(v),
+        "router": lambda: router_findings(v),
+        "forward": lambda: forward_findings(v),
+        "v6": lambda: v6_findings(v),
+        "passive": lambda: passive_findings(v),
+    }.get(e["key"], list)()

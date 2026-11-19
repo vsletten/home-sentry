@@ -58,6 +58,31 @@
     - If you need remote access, use a VPN or Tailscale instead of an open port.
     - Re-run the outside-in check.
 
+- id: upnp-forward
+  match: {kind: [outside], title: "Router forwards"}
+  title: "Close the port your router opened for {device}"
+  who: you
+  effort_min: 10
+  why: >-
+    A program on this device used UPnP to open a port through the router, so the internet can
+    connect to it. Media servers and cameras do this for "remote access".
+  steps:
+    - In the device's or app's settings, turn off remote access / UPnP.
+    - Better, turn UPnP off on the router; forward by hand only what you really need.
+    - For remote access, use Tailscale or the vendor's relay instead of an open port.
+    - Re-run the outside-in check.
+
+- id: upnp-on
+  match: {kind: [config], title: "UPnP port opening is on"}
+  title: "Turn off UPnP on the router"
+  who: you
+  effort_min: 5
+  why: >-
+    UPnP lets any device or program on the network open ports to the internet without asking.
+  steps:
+    - Router admin page or app, look for UPnP (often under Advanced or NAT) and turn it off.
+    - If a game console complains about "strict NAT", forward its ports by hand instead.
+
 - id: dormant-forward
   match: {kind: [config], title: "(?i)dormant port forward"}
   title: "Delete the dormant port-forward rule on {device}"
