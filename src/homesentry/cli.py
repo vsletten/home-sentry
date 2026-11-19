@@ -23,7 +23,10 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("list", help="print the inventory")
     sub.add_parser("threats", help="re-run the threat pass on the current inventory")
     sub.add_parser("gateway", help="read the gateway admin pages (read-only) and summarize")
-    sub.add_parser("outside", help="outside-in TCP exposure check from your probe host")
+    sub.add_parser("outside", help="what the internet can reach (router, reflector/probe host)")
+    rf = sub.add_parser("reflector", help="run the public outside-in reflector service")
+    rf.add_argument("--host", default="::")
+    rf.add_argument("--port", type=int, default=8740)
     w = sub.add_parser("watch", help="one monitoring tick (what the systemd timer runs)")
     w.add_argument("--ports-every", type=float, default=12, help="hours between port scans")
     w.add_argument("--gateway-every", type=float, default=6, help="hours between gateway reads")
@@ -158,6 +161,14 @@ def main(argv: list[str] | None = None) -> None:
         from . import doctor
 
         raise SystemExit(doctor.main(store))
+    if a.cmd == "reflector":
+        import uvicorn
+
+        from .reflector import create_app as reflector_app
+
+        uvicorn.run(reflector_app(), host=a.host, port=a.port, log_level="warning",
+                    access_log=False)  # fmt: skip
+        return
     if a.cmd == "outside":
         from . import outside
 

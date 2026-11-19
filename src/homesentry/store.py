@@ -206,8 +206,13 @@ class Store:
         )
         self.db.commit()
 
-    def clear_evidence(self, device_id: int, source: str) -> None:
-        self.db.execute("DELETE FROM evidence WHERE device_id=? AND source=?", (device_id, source))
+    def clear_evidence(self, device_id: int, source: str, key: str | None = None) -> None:
+        if key is None:
+            q, args = "DELETE FROM evidence WHERE device_id=? AND source=?", (device_id, source)
+        else:
+            q = "DELETE FROM evidence WHERE device_id=? AND source=? AND key=?"
+            args = (device_id, source, key)
+        self.db.execute(q, args)
         self.db.commit()
 
     def delete_evidence(self, device_id: int, source: str, key: str) -> None:

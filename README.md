@@ -137,6 +137,28 @@ The KB (`src/homesentry/kbdata/devices/*.yaml` seed + `~/.local/share/homesentry
 device knowledge only, so the next device of the same model is recognized automatically.
 
 
+
+## Outside-in, without owning a server
+
+"What can the internet reach?" is answered in layers (`exposure.py`), cheapest first:
+
+1. **The router's own report, always on, nothing leaves the LAN.** UPnP IGD port mappings (how
+   consoles, cameras, NAS boxes and Plex silently open ports; each mapping becomes a finding on
+   the device it points at), NAT-PMP, and the class of the router's internet address. Carrier-grade
+   NAT (100.64.0.0/10: most 5G/fixed-wireless, Starlink and many fiber ISPs) means nothing on the
+   internet can reach the house over IPv4 at all, which most owners never knew.
+2. **An active check.** Either SSH to a box you own (`PROBE_SSH=`) or a **HomeSentry reflector**
+   (`PROBE_URL=`): `homesentry reflector` is a tiny stateless service that connect-scans *only the
+   address the request came from* (so it can't be aimed at anyone else), plus at most 16 IPv6
+   addresses in the requester's own /64. It's rate-limited per /32 or /64, sends no payloads and
+   writes nothing. IPv4 and IPv6 are tested separately; devices with public IPv6 addresses are
+   checked one by one, because IPv6 has no NAT, only the router's firewall. If the reflector sees
+   a different address than the router reports, you're told you tested your VPN.
+3. **Passive, opt-in** (`INTERNETDB=1`): what Shodan's scanners already recorded for your address.
+   Free for non-commercial use; a commercial app needs Shodan's license.
+
+Config: `<config>/probe.env` (mode 600). Run it behind Caddy for TLS with `REFLECTOR_TRUST_PROXY=1`.
+
 ## Desktop app (macOS)
 
 `HomeSentry.app` is the appliance in a window. A small native shell (Tauri, `desktop/`) runs a

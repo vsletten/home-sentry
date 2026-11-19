@@ -261,7 +261,7 @@ def _outside_due(store: Store, hours: float, now: float) -> bool:
         return False
     for d in store.devices():
         for e in store.evidence(d["id"]):
-            if e["source"] == "outside" and e["key"] == "result":
+            if e["source"] == "outside" and e["key"] in ("result", "router"):
                 return now - e["ts"] >= hours * 3600
     return True
 
@@ -281,7 +281,7 @@ def run_watch(
 
     now = time.time()
     did_outside = False
-    if outside.load_conf() and _outside_due(store, outside_every_h, now):
+    if _outside_due(store, outside_every_h, now):  # the router layer needs no setup
         try:
             outside.run_and_record(store, log=log, rethreat=False)
             did_outside = True
